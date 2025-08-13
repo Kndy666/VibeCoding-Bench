@@ -1,0 +1,57 @@
+[common]
+# GitHub API配置
+github_token = "YOUR_GITHUB_TOKEN_HERE"
+github_api_base = "https://api.github.com"
+
+# OpenAI API配置
+openai_api_key = "YOUR_OPENAI_API_KEY_HERE"
+openai_model = "deepseek-chat"
+openai_base_url = "https://api.deepseek.com"
+
+# 输出目录配置
+output_dir = "output"
+
+[release_collector]
+# 筛选阈值
+min_stars_range = 5000
+default_release_limit = 30
+min_releases = 5
+min_release_body_length = 50
+min_release_date = "2024-06-01"
+rank_start = 100
+rank_end = 200
+
+# 排除的主题
+excluded_topics = ["tutorial", "beginner", "example", "course", "boilerplate", "book", "awesome", "books", "education", "learning", "demo", "starter", "guide"]
+
+# 测试用例相关配置
+test_directories = ["test", "tests", "testing", "spec", "specs"]
+test_file_patterns = ["test_.*\\.py$", ".*_test\\.py$", ".*_spec\\.py$", "conftest\\.py$"]
+bot_users = ["github-actions[bot]", "dependabot[bot]", "renovate[bot]", "greenkeeper[bot]"]
+
+# 缓存文件
+cache_file = "processed_repos_cache.json"
+
+[release_analyzer]
+# 缓存文件
+analysis_cache_file = "release_analysis_cache.json"
+
+# README处理配置
+max_readme_length = 2000
+readme_truncation_suffix = "...(truncated)"
+
+[pr_analyzer]
+# 缓存文件  
+pr_analysis_cache_file = "pr_analysis_cache.json"
+
+# 文件变更摘要配置
+max_files_in_summary = 50
+max_patch_length = 1000
+max_patch_preview_length = 600
+
+[main]
+# 最终结果文件
+final_results_file = "final_analysis_results.json"
+
+# 打印参数
+sample_results_limit = 5
