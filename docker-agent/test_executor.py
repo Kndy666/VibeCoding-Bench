@@ -24,22 +24,29 @@ def run_tests_in_container(container: docker.models.containers.Container, test_s
     
     return passed_files, logs
 
+
 def parse_pytest_output(logs: str, test_spec: Dict) -> Set[str]:
-    """解析pytest输出，提取通过测试的文件"""
-    passed_files = set()
-    # 匹配类似 "PASSED tests/contrib/admindocs/test_utils.py::TestParseDocstring::test_cleandoc_behavior" 的行
-    pattern = r"PASSED\s+([\w/]+.py)(?:::|$)"
-    
+    """解析pytest输出，提取完全通过测试的文件（无失败和错误）"""
+    # 存储所有出现过的测试文件及其状态
+    file_status = {}
+    # 匹配测试结果行中的文件名
+    pattern = r"(PASSED|FAILED|ERROR)\s+([\w/]+.py)(?:::|$)"
+
     for line in logs.split("\n"):
-        if "PASSED" in line:
-            match = re.search(pattern, line)
-            if match:
-                file_name = match.group(1)
-                # 验证文件是否在测试列表中
-                if any(file_name.endswith(tf) or tf.endswith(file_name) for tf in test_spec["test_files"]):
-                    passed_files.add(file_name)
-    
-    return passed_files
+        match = re.search(pattern, line)
+        if match:
+            status, file_name = match.groups()
+            # 验证文件是否在测试列表中
+            if any(file_name.endswith(tf) or tf.endswith(file_name) for tf in test_spec["test_files"]):
+                # 首次出现该文件时初始化状态为通过
+                if file_name not in file_status:
+                    file_status[file_name] = True  # True表示通过
+                # 如果出现失败或错误，标记为不通过
+                if status in ("FAILED", "ERROR"):
+                    file_status[file_name] = False
+
+    # 只返回状态为通过的文件
+    return set(file for file, status in file_status.items() if status)
 
 def call_trae_agent(container: docker.models.containers.Container, container_name: str, test_spec: Dict) -> str:
     """在容器内执行trae-agent命令，只输出和记录stderr内容"""

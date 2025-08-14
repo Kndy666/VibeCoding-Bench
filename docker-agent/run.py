@@ -123,20 +123,20 @@ def process_single_test_spec(test_spec: Dict) -> None:
         # # 3. 保存容器为镜像
         # print("\n[3/6] 保存容器为镜像...")
         # save_container_as_image(container, test_spec)
-        
-        # 4. 运行测试（patch前）
-        print("\n[4/6] 运行patch前的测试...")
+
+        # 4. 运行测试（patch后）
+        print("\n[4/6] 应用测试patch...")
+        test_modified_files = apply_patches(container, test_spec["test_patch"], test_spec['repo'].split('/')[-1])
+
+        # 5. 运行测试（patch前）
+        print("\n[5/6] 运行patch前的测试...")
         pre_passed, pre_logs = run_tests_in_container(container, test_spec, test_spec['repo'].split('/')[-1])
         print(f"patch前通过的测试文件: {sorted(pre_passed)}")
         
-        # 5. 应用主代码patch和测试代码patch
-        print("\n[5/6] 应用主patch...")
+        # 6. 应用主代码patch和测试代码patch
+        print("\n[6/6] 应用主patch...")
         main_modified_files = apply_patches(container, test_spec["patch"], test_spec['repo'].split('/')[-1])
         
-        print("\n[5/6] 应用测试patch...")
-        test_modified_files = apply_patches(container, test_spec["test_patch"], test_spec['repo'].split('/')[-1])
-        
-        # 6. 运行测试（patch后）
         print("\n[6/6] 运行patch后的测试...")
         post_passed, post_logs = run_tests_in_container(container, test_spec, test_spec['repo'].split('/')[-1])
         print(f"patch后通过的测试文件: {sorted(post_passed)}")
