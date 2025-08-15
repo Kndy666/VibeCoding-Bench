@@ -54,6 +54,6 @@ RUN \
 
 COPY trae-agent/agent_prompt.py /workdir/trae-agent/trae_agent/prompt/agent_prompt.py
 
-RUN sed -i 's/_timeout: float = 120\.0/_timeout: float = 300.0/g' /workdir/trae-agent/trae_agent/tools/bash_tool.py
+RUN sed -i 's/_timeout: float = 120\.0/_timeout: float = 600.0/g' /workdir/trae-agent/trae_agent/tools/bash_tool.py
 
 ENV PYTHONPATH=/usr/local/lib/python3.12/dist-packages
