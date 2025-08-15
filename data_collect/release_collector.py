@@ -25,7 +25,6 @@ HEADERS = {'Authorization': f'Bearer {TOKEN}', 'Accept': 'application/vnd.github
 
 # 筛选阈值
 MIN_STARS = CONFIG['release_collector']['min_stars_range']
-# MAX_STARS = CONFIG['release_collector']['max_stars_range']  # 移除最大star限制
 RANK_START = CONFIG['release_collector']['rank_start']
 RANK_END = CONFIG['release_collector']['rank_end']
 MIN_RELEASES = CONFIG['release_collector']['min_releases']
@@ -288,7 +287,7 @@ def is_valid_release(release_data: dict) -> bool:
         return False
     
     # 检查release body长度
-    body = release_data.get('body', '')
+    body = release_data.get('body', '') or ''  # 确保body不为None
     if len(body.strip()) < MIN_RELEASE_BODY_LENGTH:
         return False
     
