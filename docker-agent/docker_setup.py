@@ -217,7 +217,7 @@ def apply_patches(container: docker.models.containers.Container, file_changes: L
             f"diff --git a/{filename} b/{filename}\n"
             f"--- a/{filename}\n"
             f"+++ b/{filename}\n"
-            f"{patch_content}"
+            f"{patch_content}\n"
         )
         
         # 1. 将patch内容编码为base64并写入容器内的临时文件
