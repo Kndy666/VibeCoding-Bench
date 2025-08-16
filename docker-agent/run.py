@@ -38,23 +38,36 @@ ANALYSIS_FILE = Path("data_collect/output/analysis_results.json")
 
 # 全局变量存储当前活动的容器
 active_containers = []
+cleanup_in_progress = False  # 添加清理状态标志
 
 def signal_handler(signum, frame):
     """处理终止信号"""
+    global cleanup_in_progress
+    
+    if cleanup_in_progress:
+        logger.info("清理已在进行中，忽略重复信号")
+        return
+        
+    cleanup_in_progress = True
     logger.info(f"\n收到信号 {signum}，正在清理容器...")
     
-    for container in active_containers:
+    for container in active_containers[:]:  # 创建副本避免修改原列表
         if container:
             try:
                 # 询问用户是否删除容器
                 try:
-                  response = input(f"\n是否要删除容器 {container.name}? (y/N): ").strip().lower()
-                  force_remove = response in ['y', 'yes']
+                    response = input(f"\n是否要删除容器 {container.name}? (y/N): ").strip().lower()
+                    force_remove = response in ['y', 'yes']
                 except (EOFError, KeyboardInterrupt):
-                  force_remove = False  # 默认不删除容器
+                    force_remove = False  # 默认不删除容器
+                    logger.info("用户中断输入，默认保留容器")
+                
                 cleanup_container(container, force_remove=force_remove)
+                active_containers.remove(container)  # 从列表中移除已清理的容器
             except Exception as e:
                 logger.error(f"清理容器 {container.name} 时出错: {e}")
+    
+    cleanup_in_progress = False
     sys.exit(0)
 
 def main():
@@ -136,8 +149,10 @@ def main():
 
                 except Exception as inst_err:
                     logger.error(f"处理 {spec['instance_id']} 时出错: {str(inst_err)}")
+        except Exception as inst_err:
+            logger.error(f"处理仓库 {repo} 时出错: {str(inst_err)}")
         finally:
-            if container is not None:
+            if container is not None and not cleanup_in_progress:  # 只有在非信号清理时才执行
                 # 从活动容器列表中移除
                 if container in active_containers:
                     active_containers.remove(container)
