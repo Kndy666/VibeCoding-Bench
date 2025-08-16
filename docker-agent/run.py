@@ -3,7 +3,8 @@ from docker_setup import (
     setup_container_and_environment,
     apply_patches,
     checkout_commit,
-    cleanup_container
+    cleanup_container,
+    save_container_image
 )
 from agent_executor import (
     run_tests_in_container,
@@ -70,6 +71,9 @@ def main():
         repo = spec["repo"]
         specs_by_repo[repo].append(spec)
 
+    # 跟踪已保存镜像的仓库
+    saved_repos = set()
+
     # 每个仓库只配置/启动一次容器
     for repo, repo_specs in specs_by_repo.items():
         container = None
@@ -78,7 +82,7 @@ def main():
             container = setup_container_and_environment(repo)
             active_containers.append(container)  # 添加到活动容器列表
             
-            for spec in repo_specs:
+            for spec in repo_specs[:3]:
                 # 检查是否已经处理过
                 if spec.get("processed", False):
                     logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
@@ -87,6 +91,15 @@ def main():
                 try:
                     checkout_commit(container, repo_name, spec["base_commit"])
                     call_trae_agent(container, repo_name, spec["test_files"], spec["instance_id"])
+
+                    # 在第一次call_trae_agent后保存镜像
+                    if repo not in saved_repos:
+                        try:
+                            save_container_image(container, repo)
+                            saved_repos.add(repo)
+                            logger.info(f"已为仓库 {repo} 保存配置后的镜像")
+                        except Exception as save_err:
+                            logger.error(f"保存仓库 {repo} 镜像失败: {str(save_err)}")
 
                     test_modified_files = apply_patches(container, spec["test_patch"], repo_name)
                     pre_passed, pre_logs = run_tests_in_container(container, spec["test_files"], repo_name)
@@ -128,7 +141,7 @@ def main():
                 # 从活动容器列表中移除
                 if container in active_containers:
                     active_containers.remove(container)
-                cleanup_container(container)
+                cleanup_container(container, force_remove=True)
 
     logger.info("所有处理完成")
 

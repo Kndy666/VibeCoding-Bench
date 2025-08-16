@@ -36,6 +36,82 @@ def check_cached_container(repo: str) -> Optional[docker.models.containers.Conta
         logger.error(f"检查缓存容器时出错: {str(e)}")
         return None
 
+def save_container_image(container: docker.models.containers.Container, repo: str) -> str:
+    """
+    保存容器为新的镜像
+    
+    Args:
+        container: 要保存的容器
+        repo: 仓库名称
+    
+    Returns:
+        新镜像的ID
+    """
+    client = docker.from_env()
+    repo_clean = repo.replace("/", "_")
+    image_name = f"cached_{repo_clean}"
+    
+    try:
+        logger.info(f"正在保存容器为镜像: {image_name}")
+        
+        # 提交容器为新镜像
+        image = container.commit(repository=image_name, tag="latest")
+        
+        logger.info(f"成功保存镜像: {image_name}:latest (ID: {image.id[:12]})")
+        return image.id
+        
+    except Exception as e:
+        logger.error(f"保存容器镜像失败: {str(e)}")
+        raise RuntimeError(f"保存容器镜像失败: {str(e)}")
+
+def check_cached_image(repo: str) -> bool:
+    """检查是否存在缓存的镜像"""
+    client = docker.from_env()
+    repo_clean = repo.replace("/", "_")
+    image_name = f"cached_{repo_clean}:latest"
+    
+    try:
+        client.images.get(image_name)
+        logger.info(f"发现缓存镜像: {image_name}")
+        return True
+    except docker.errors.ImageNotFound:
+        logger.info(f"未找到缓存镜像: {image_name}")
+        return False
+    except Exception as e:
+        logger.error(f"检查缓存镜像时出错: {str(e)}")
+        return False
+
+def create_container_from_cached_image(repo: str) -> docker.models.containers.Container:
+    """从缓存镜像创建容器"""
+    client = docker.from_env()
+    repo_clean = repo.replace("/", "_")
+    image_name = f"cached_{repo_clean}:latest"
+    
+    logger.info(f"从缓存镜像创建容器: {image_name}")
+    
+    container = client.containers.run(
+        image=image_name,
+        name=repo_clean,
+        command="/bin/bash",
+        detach=True,
+        tty=True,
+        runtime="nvidia",
+        network_mode="host",
+        device_requests=[{
+            'count': -1,
+            'capabilities': [['gpu']]
+        }],
+        volumes={
+            os.path.join(os.getcwd(), "swap"): {
+                "bind": "/workdir/swap",
+                "mode": "rw"
+            }
+        }
+    )
+    
+    logger.info(f"从缓存镜像成功创建容器: {repo_clean}")
+    return container
+
 def setup_container_and_environment(repo: str) -> docker.models.containers.Container:
     """创建Docker容器并配置测试环境（带缓存支持）"""
 
@@ -43,6 +119,10 @@ def setup_container_and_environment(repo: str) -> docker.models.containers.Conta
     cached_container = check_cached_container(repo.replace("/", "_"))
     if cached_container:
         return cached_container
+
+    # 检查是否存在缓存的镜像
+    if check_cached_image(repo):
+        return create_container_from_cached_image(repo)
 
     logger.info(f"创建新容器: {repo.replace('/', '_')}")
     client = docker.from_env()

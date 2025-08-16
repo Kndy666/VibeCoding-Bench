@@ -43,7 +43,6 @@ def parse_pytest_output(logs: str, test_files: List[str]) -> Set[str]:
 
 def call_trae_agent(container: docker.models.containers.Container, repo_name: str, test_files: List[str], id: str) -> str:
     """在容器内执行trae-agent命令，只输出和记录stderr内容"""
-    # _BashSession._timeout = 300.0
 
     test_files_str = ", ".join(test_files)
 
