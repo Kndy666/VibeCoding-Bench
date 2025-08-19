@@ -2,292 +2,297 @@ import docker
 import os
 import base64
 import logging
+from pathlib import Path
 from typing import List, Dict, Optional
 import docker.models.containers
+from command_executor import LocalCommandExecutor, DockerCommandExecutor, docker_environment
+from docker_image_builder import DockerImageBuilder
 
-# 获取logger实例，不重新配置
-logger = logging.getLogger(__name__)
-
-def check_cached_container(repo: str) -> Optional[docker.models.containers.Container]:
-    """检查是否存在缓存的容器"""
-    client = docker.from_env()
+class CacheManager:
+    """容器和镜像缓存管理器"""
     
-    try:
-        # 查找已存在的容器
-        container = client.containers.get(repo)
+    def __init__(self, repo: str, repo_id: str, timeout=300):
+        self.logger = logging.getLogger(__name__)
+        self.client = docker.from_env(timeout=timeout)
+        self.repo = repo.replace("/", "_")
+        self.repo_id = repo_id
+        self.image_builder = DockerImageBuilder(timeout)
+        self.base_path = Path(__file__).parent
+    
+    def check_cached_container(self) -> Optional[docker.models.containers.Container]:
+        """检查是否存在缓存的容器"""
         
-        # 检查容器状态
-        if container.status == 'running':
-            logger.info(f"发现运行中的缓存容器: {repo}")
-            return container
-        elif container.status == 'exited':
-            logger.info(f"发现已停止的缓存容器: {repo}，正在重启...")
-            container.start()
-            return container
-        else:
-            logger.warning(f"容器 {repo} 状态异常: {container.status}，将重新创建")
-            container.remove(force=True)
-            return None
+        try:
+            # 查找已存在的容器
+            container = self.client.containers.get(self.repo)
             
-    except docker.errors.NotFound:
-        logger.info(f"未找到缓存容器: {repo}")
-        return None
-    except Exception as e:
-        logger.error(f"检查缓存容器时出错: {str(e)}")
-        return None
+            # 检查容器状态
+            if container.status == 'running':
+                self.logger.info(f"发现运行中的缓存容器: {self.repo}")
+                return container
+            elif container.status == 'exited':
+                self.logger.info(f"发现已停止的缓存容器: {self.repo}，正在重启...")
+                container.start()
+                return container
+            else:
+                self.logger.warning(f"容器 {self.repo} 状态异常: {container.status}，将重新创建")
+                container.remove(force=True)
+                return None
+                
+        except docker.errors.NotFound:
+            self.logger.info(f"未找到缓存容器: {self.repo}")
+            return None
+        except Exception as e:
+            self.logger.error(f"检查缓存容器时出错: {str(e)}")
+            return None
 
-def save_container_image(container: docker.models.containers.Container, repo: str) -> str:
-    """
-    保存容器为新的镜像
-    
-    Args:
-        container: 要保存的容器
-        repo: 仓库名称
-    
-    Returns:
-        新镜像的ID
-    """
-    client = docker.from_env()
-    repo_clean = repo.replace("/", "_")
-    image_name = f"cached_{repo_clean}"
-    
-    try:
-        logger.info(f"正在保存容器为镜像: {image_name}")
-        
-        # 提交容器为新镜像
-        image = container.commit(repository=image_name, tag="latest")
-        
-        logger.info(f"成功保存镜像: {image_name}:latest (ID: {image.id[:12]})")
-        return image.id
-        
-    except Exception as e:
-        logger.error(f"保存容器镜像失败: {str(e)}")
-        raise RuntimeError(f"保存容器镜像失败: {str(e)}")
+    def save_container_as_image(self, container: docker.models.containers.Container) -> str:
+        """保存容器为新的镜像"""
 
-def check_cached_image(repo: str) -> bool:
-    """检查是否存在缓存的镜像"""
-    client = docker.from_env()
-    repo_clean = repo.replace("/", "_")
-    image_name = f"cached_{repo_clean}:latest"
-    
-    try:
-        client.images.get(image_name)
-        logger.info(f"发现缓存镜像: {image_name}")
-        return True
-    except docker.errors.ImageNotFound:
-        logger.info(f"未找到缓存镜像: {image_name}")
-        return False
-    except Exception as e:
-        logger.error(f"检查缓存镜像时出错: {str(e)}")
-        return False
+        image_name = f"cached_{self.repo}"
+        
+        try:
+            self.logger.info(f"正在保存容器为镜像: {image_name}")
+            
+            # 提交容器为新镜像
+            image = container.commit(repository=image_name, tag=self.repo_id)
+            
+            self.logger.info(f"成功保存镜像: {image_name}:latest (ID: {image.id[:12]})")
+            return image.id
+            
+        except Exception as e:
+            self.logger.error(f"保存容器镜像失败: {str(e)}")
+            raise RuntimeError(f"保存容器镜像失败: {str(e)}")
 
-def create_container_from_cached_image(repo: str) -> docker.models.containers.Container:
-    """从缓存镜像创建容器"""
-    client = docker.from_env()
-    repo_clean = repo.replace("/", "_")
-    image_name = f"cached_{repo_clean}:latest"
-    
-    logger.info(f"从缓存镜像创建容器: {image_name}")
-    
-    container = client.containers.run(
-        image=image_name,
-        name=repo_clean,
-        command="/bin/bash",
-        detach=True,
-        tty=True,
-        runtime="nvidia",
-        network_mode="host",
-        device_requests=[{
-            'count': -1,
-            'capabilities': [['gpu']]
-        }],
-        volumes={
-            os.path.join(os.getcwd(), "swap"): {
-                "bind": "/workdir/swap",
-                "mode": "rw"
+    def check_cached_image(self) -> bool:
+        """检查是否存在缓存的镜像"""
+
+        image_name = f"cached_{self.repo}:{self.repo_id}"
+        
+        try:
+            self.client.images.get(image_name)
+            self.logger.info(f"发现缓存镜像: {image_name}")
+            return True
+        except docker.errors.ImageNotFound:
+            self.logger.info(f"未找到缓存镜像: {image_name}")
+            return False
+        except Exception as e:
+            self.logger.error(f"检查缓存镜像时出错: {str(e)}")
+            return False
+
+    def create_container_from_cached_image(self) -> docker.models.containers.Container:
+        """从缓存镜像创建容器"""
+
+        image_name = f"cached_{self.repo}:{self.repo_id}"
+        
+        self.logger.info(f"从缓存镜像创建容器: {image_name}")
+        
+        container = self.client.containers.run(
+            image=image_name,
+            name=self.repo,
+            command="/bin/bash",
+            detach=True,
+            tty=True,
+            runtime="nvidia",
+            network_mode="host",
+            device_requests=[{
+                'count': -1,
+                'capabilities': [['gpu']]
+            }],
+            environment=docker_environment,
+            volumes={
+                self.base_path / "swap": {
+                    "bind": "/workdir/swap",
+                    "mode": "rw"
+                }
             }
-        }
-    )
-    
-    logger.info(f"从缓存镜像成功创建容器: {repo_clean}")
-    return container
-
-def setup_container_and_environment(repo: str) -> docker.models.containers.Container:
-    """创建Docker容器并配置测试环境（带缓存支持）"""
-
-    # 首先检查是否存在缓存的容器
-    cached_container = check_cached_container(repo.replace("/", "_"))
-    if cached_container:
-        return cached_container
-
-    # 检查是否存在缓存的镜像
-    if check_cached_image(repo):
-        return create_container_from_cached_image(repo)
-
-    logger.info(f"创建新容器: {repo.replace('/', '_')}")
-    client = docker.from_env()
-
-    # 创建带有GPU支持的容器，挂载trae-agent目录和配置文件
-    container = client.containers.run(
-        image="codegen_base",
-        name=repo.replace("/", "_"),
-        command="/bin/bash",
-        detach=True,
-        tty=True,
-        runtime="nvidia",  # 启用GPU支持
-        network_mode="host",
-        device_requests=[{
-            'count': -1,
-            'capabilities': [['gpu']]
-        }],
-        volumes={
-            os.path.join(os.getcwd(), "swap"): {
-                "bind": "/workdir/swap",
-                "mode": "rw"
-            }
-        }
-    )
-
-    logger.info(f"容器 {repo.replace('/', '_')} 创建成功（带GPU支持）")
-
-    # 构建仓库URL
-    repo_url = f"https://hk.gh-proxy.com/https://github.com/{repo}.git"
-    
-    # 在容器中执行环境配置命令
-    commands = f"git clone {repo_url}"
-    
-    logger.info(f"执行命令: {commands}")
-        
-    # 执行命令并获取流式输出
-    exec_result = container.exec_run(
-        f"/bin/bash -c '{commands}'",
-        workdir="/workdir",
-        stdout=True,
-        stderr=True,
-        stream=True,
-        tty=True
-    )
-
-    # 处理流式输出
-    output_lines = []
-    try:
-        for line in exec_result.output:
-            line_str = line.decode('utf-8', errors='replace')
-            logger.debug(f"命令输出: {line_str.rstrip()}")
-            print(line_str, end='', flush=True)  # 保留实时显示
-            output_lines.append(line_str)
-    except Exception as e:
-        logger.error(f"读取输出时出错: {e}")
-    
-    # 等待命令完成并获取退出码
-    exec_result.output.close() if hasattr(exec_result.output, 'close') else None
-    exit_code = exec_result.exit_code
-    output_str = ''.join(output_lines)
-
-    logger.info(f"命令完成，返回码: {exit_code}")
-    if exit_code is not None and exit_code != 0:
-        logger.error(f"命令执行失败: {commands}\n错误: {output_str}")
-        raise RuntimeError(f"命令执行失败: {commands}\n错误: {output_str}")
-    
-    return container
-
-def apply_patches(container: docker.models.containers.Container, file_changes: List[Dict], repo_name: str) -> List[str]:
-    """
-    应用文件变更到容器中
-    
-    Args:
-        container: 目标容器
-        file_changes: 文件变更列表，每个元素包含filename和patch字段
-        repo_name: 仓库名称
-    
-    Returns:
-        被修改的文件路径列表
-    """
-    modified_files = []
-    
-    for change in file_changes:
-        filename = change.get("filename")
-        patch_content = change.get("patch", "")
-        
-        if not filename or not patch_content:
-            continue  # 跳过无效的变更记录
-        
-        # 构建完整的diff格式内容
-        diff_content = (
-            f"diff --git a/{filename} b/{filename}\n"
-            f"--- a/{filename}\n"
-            f"+++ b/{filename}\n"
-            f"{patch_content}\n"
         )
         
-        # 1. 将patch内容编码为base64并写入容器内的临时文件
-        patch_base64 = base64.b64encode(diff_content.encode('utf-8')).decode('utf-8')
-        write_cmd = f"echo '{patch_base64}' | base64 -d > /tmp/patch.tmp"
-        exit_code, output = container.exec_run(f"/bin/bash -c '{write_cmd}'")
-        if exit_code != 0:
-            logger.error(f"写入patch到临时文件失败: {output.decode()}")
-            raise RuntimeError(f"写入patch到临时文件失败: {output.decode()}")
-        
-        # 2. 应用patch到目标文件（在仓库根目录下执行）
-        apply_cmd = f"cd {repo_name} && patch -p1 < /tmp/patch.tmp"
-        exit_code, output = container.exec_run(f"/bin/bash -c '{apply_cmd}'", workdir="/workdir")
-        output_str = output.decode()
-        
-        if exit_code != 0:
-            logger.error(f"应用patch到 {filename} 失败: {output_str}")
-            raise RuntimeError(f"应用patch到 {filename} 失败: {output_str}")
-        
-        modified_files.append(filename)
-        logger.info(f"成功应用patch到: {filename}")
+        self.logger.info(f"从缓存镜像成功创建容器: {self.repo}")
+        return container
+
+    def create_new_container(self) -> docker.models.containers.Container:
+        """创建新的容器"""
+        self.logger.info(f"创建新容器: {self.repo}")
+
+        # 构建动态镜像
+        image_name = self.image_builder.build_image(self.repo)
+
+        # 创建带有GPU支持的容器
+        container = self.client.containers.run(
+            image=image_name,
+            name=self.repo,
+            command="/bin/bash",
+            detach=True,
+            tty=True,
+            runtime="nvidia",
+            network_mode="host",
+            device_requests=[{
+                'count': -1,
+                'capabilities': [['gpu']]
+            }],
+            environment=docker_environment,
+            volumes={
+                self.base_path / "swap": {
+                    "bind": "/workdir/swap",
+                    "mode": "rw"
+                }
+            }
+        )
+
+        self.logger.info(f"容器 {self.repo} 创建成功（带GPU支持）")
+        return container
+
+class ContainerOperator:
+    """容器操作类"""
     
-    return modified_files
+    def __init__(self, repo: str, container: Optional[docker.models.containers.Container] = None):
+        self.container = container
+        self.logger = logging.getLogger(__name__)
+        self.docker_executor = DockerCommandExecutor(container)
+        self.local_executor = LocalCommandExecutor()
+        self.base_path = Path(__file__).parent
+        self.repo = repo
+        self.repo_name = repo.split("/")[-1]
 
-def cleanup_container(container: docker.models.containers.Container, force_remove: bool = False) -> None:
-    """清理容器资源"""
+    def repo_clone(self, use_docker=True):
+        """克隆仓库"""
+        # 检查目录是否已存在
+        if use_docker:
+            check_cmd = f"test -d /workdir/swap/{self.repo_name}"
+            exit_code, _ = self.docker_executor.execute(check_cmd)
+        else:
+            repo_path = self.base_path / "swap" / self.repo_name
+            if repo_path.exists():
+                exit_code = 0
+            else:
+                exit_code = 1
+        
+        if exit_code == 0:
+            self.logger.info(f"目录 {self.repo_name} 已存在，跳过克隆")
+            return
+        
+        repo_url = f"https://hk.gh-proxy.com/https://github.com/{self.repo}.git"
+        command = f"git clone {repo_url}"
+        
+        # 使用流式执行命令
+        if use_docker:
+            exit_code, output = self.docker_executor.execute_stream(command)
+        else:
+            exit_code, output = self.local_executor.execute_stream(command, self.base_path / "swap")
+        
+        self.logger.info(f"命令完成，返回码: {exit_code}")
+        if exit_code is not None and exit_code != 0:
+            self.logger.error(f"命令执行失败: {command}\n错误: {output}")
+            raise RuntimeError(f"命令执行失败: {command}\n错误: {output}")
 
-    if container:
-        try:
-            if force_remove:
+    def checkout_commit(self, commit_hash: str, use_docker=True) -> None:
+        """切换到指定的commit"""
+        self.logger.info(f"正在强制切换到commit: {commit_hash}")
+        
+        commands = [
+            f"git reset --hard",
+            f"git clean -fd",
+            f"git checkout {commit_hash}"
+        ]
+        
+        for cmd in commands:
+            if use_docker:
+                exit_code, output = self.docker_executor.execute(cmd, Path("/workdir/swap") / self.repo_name)
+            else:
+                exit_code, output = self.local_executor.execute(cmd, self.base_path / "swap" / self.repo_name)
+
+            if exit_code != 0:
+                self.logger.error(f"执行命令失败: {cmd}\n错误: {output}")
+                raise RuntimeError(f"执行命令失败: {cmd}\n错误: {output}")
+                
+            self.logger.info(f"执行成功: {cmd.split('&&')[-1].strip()}")
+        
+        self.logger.info(f"成功强制切换到commit: {commit_hash}")
+
+    def apply_patches(self, file_changes: List[Dict], use_docker=True) -> List[str]:
+        """应用文件变更"""
+        modified_files = []
+        
+        for change in file_changes:
+            filename = change.get("filename")
+            patch_content = change.get("patch", "")
+            
+            if not filename or not patch_content:
+                continue
+            
+            # 构建完整的diff格式内容
+            diff_content = (
+                f"diff --git a/{filename} b/{filename}\n"
+                f"--- a/{filename}\n"
+                f"+++ b/{filename}\n"
+                f"{patch_content}\n"
+            )
+            
+            # 将patch内容编码为base64并写入临时文件
+            patch_base64 = base64.b64encode(diff_content.encode('utf-8')).decode('utf-8')
+            write_cmd = f"echo '{patch_base64}' | base64 -d > /tmp/patch.tmp"
+            
+            if use_docker:
+                exit_code, output = self.docker_executor.execute(write_cmd)
+            else:
+                exit_code, output = self.local_executor.execute(write_cmd)
+                
+            if exit_code != 0:
+                self.logger.error(f"写入patch到临时文件失败: {output}")
+                raise RuntimeError(f"写入patch到临时文件失败: {output}")
+            
+            # 应用patch到目标文件
+            apply_cmd = "patch -p1 < /tmp/patch.tmp"
+            if use_docker:
+                exit_code, output = self.docker_executor.execute(apply_cmd, Path("/workdir/swap") / self.repo_name)
+            else:
+                exit_code, output = self.local_executor.execute(apply_cmd, self.base_path / "swap" / self.repo_name)
+            
+            if exit_code != 0:
+                self.logger.error(f"应用patch到 {filename} 失败: {output}")
+                raise RuntimeError(f"应用patch到 {filename} 失败: {output}")
+            
+            modified_files.append(filename)
+            self.logger.info(f"成功应用patch到: {filename}")
+        
+        return modified_files
+
+class DockerEnvironmentManager:
+    """Docker环境管理器"""
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def setup_container_and_environment(self, repo: str, repo_id: str, timeout=300) -> docker.models.containers.Container:
+        """创建Docker容器并配置测试环境（带缓存支持）"""
+
+        self.cache_manager = CacheManager(repo, repo_id, timeout)
+        # 首先检查是否存在缓存的容器
+        cached_container = self.cache_manager.check_cached_container()
+        if cached_container:
+            return cached_container
+
+        # 检查是否存在缓存的镜像
+        if self.cache_manager.check_cached_image():
+            return self.cache_manager.create_container_from_cached_image()
+
+        # 创建新容器（使用动态构建的镜像）
+        return self.cache_manager.create_new_container()
+    
+    def cleanup_container(self, container: docker.models.containers.Container, force_remove: bool = False) -> None:
+        """清理容器资源"""
+        if container:
+            try:
+                if force_remove:
+                    container.stop()
+                    container.remove()
+                    self.logger.info(f"容器 {container.name} 已删除")
+                else:
+                    self.logger.info(f"容器 {container.name} 保留作为缓存")
+                    
+            except Exception as e:
+                self.logger.error(f"处理容器时出错: {str(e)}")
                 container.stop()
                 container.remove()
-                logger.info(f"容器 {container.name} 已删除")
-            else:
-                # 不删除容器，保留作为缓存
-                logger.info(f"容器 {container.name} 保留作为缓存")
-                
-        except Exception as e:
-            logger.error(f"处理容器时出错: {str(e)}")
-            container.stop()
-            container.remove()
-            logger.info(f"容器 {container.name} 已删除")
-
-def checkout_commit(container: docker.models.containers.Container, repo_name: str, commit_hash: str) -> None:
-    """
-    在容器中切换到指定的commit（强制切换，丢弃本地更改）
-    
-    Args:
-        container: 目标容器
-        repo_name: 仓库名称
-        commit_hash: 要切换到的commit哈希值
-    """
-    logger.info(f"正在强制切换到commit: {commit_hash}")
-    
-    # 先丢弃所有本地更改，然后强制切换
-    commands = [
-        f"cd {repo_name} && git reset --hard",  # 重置所有已跟踪文件的更改
-        f"cd {repo_name} && git clean -fd",     # 删除未跟踪的文件和目录
-        f"cd {repo_name} && git checkout {commit_hash}"  # 切换到指定commit
-    ]
-    
-    for cmd in commands:
-        exit_code, output = container.exec_run(f"/bin/bash -c '{cmd}'", workdir="/workdir")
-        output_str = output.decode()
-        
-        if exit_code != 0:
-            logger.error(f"执行命令失败: {cmd}\n错误: {output_str}")
-            raise RuntimeError(f"执行命令失败: {cmd}\n错误: {output_str}")
-        
-        logger.info(f"执行成功: {cmd.split('&&')[-1].strip()}")
-    
-    logger.info(f"成功强制切换到commit: {commit_hash}")
-    logger.debug(f"输出: {output_str}")
+                self.logger.info(f"容器 {container.name} 已删除")

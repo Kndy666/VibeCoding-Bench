@@ -11,6 +11,10 @@ openai_base_url = "https://api.deepseek.com"
 # 输出目录配置
 output_dir = "output"
 
+# 爬取模式配置
+crawl_mode = "stars"  # "stars" 或 "specified"
+crawl_json_file = "crawl.json"
+
 [release_collector]
 # 筛选阈值
 min_stars_range = 5000

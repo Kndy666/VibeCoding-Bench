@@ -26,18 +26,18 @@ def process_entry(entry: Dict) -> List[Dict]:
             # 获取所有文件变更记录
             all_file_changes = pr.get("file_changes", [])
             
-            # 获取non_test_files列表并提取对应的变更
-            non_test_file_names = pr.get("non_test_files", [])
-            non_test_changes = [
-                fc for fc in all_file_changes 
-                if fc.get("filename") in non_test_file_names
-            ]
-            
             # 获取test_files列表并提取对应的变更
             test_file_names = pr.get("test_files", [])
             test_changes = [
                 fc for fc in all_file_changes 
                 if fc.get("filename") in test_file_names
+            ]
+
+            # 获取non_test_files列表并提取对应的变更
+            # non_test_file_names = pr.get("non_test_files", [])
+            non_test_changes = [
+                fc for fc in all_file_changes 
+                if fc.get("filename") not in test_file_names
             ]
             
             # 构建目标格式字典，直接保存文件变更列表
@@ -83,6 +83,6 @@ def main(input_path: str, output_path: str):
 
 if __name__ == "__main__":
     # 示例用法（可根据实际路径修改）
-    input_json_path = "data_collect/output/final_analysis_results.json"   # 输入JSON文件路径
-    output_json_path = "data_collect/output/analysis_results.json" # 输出结果路径
+    input_json_path = "data_collect/swebench-live/final_analysis_results.json"   # 输入JSON文件路径
+    output_json_path = "data_collect/swebench-live/analysis_results.json" # 输出结果路径
     main(input_json_path, output_json_path)

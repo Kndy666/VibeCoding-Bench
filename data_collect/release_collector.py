@@ -23,6 +23,10 @@ CONFIG = load_config()
 TOKEN = CONFIG['common']['github_token']
 HEADERS = {'Authorization': f'Bearer {TOKEN}', 'Accept': 'application/vnd.github.v3+json'}
 
+# 爬取模式配置
+CRAWL_MODE = CONFIG['common']['crawl_mode']
+CRAWL_JSON_FILE = Path(__file__).parent / CONFIG['common']['crawl_json_file']
+
 # 筛选阈值
 MIN_STARS = CONFIG['release_collector']['min_stars_range']
 RANK_START = CONFIG['release_collector']['rank_start']
@@ -564,13 +568,99 @@ def process_single_repository(repo: Dict, use_cache: bool = True) -> Repository:
     
     return repository
 
-def get_repositories_to_process(use_cache: bool = True) -> Tuple[List[Dict], Dict[str, Repository]]:
+def get_specified_repos():
+    """从 crawl.json 文件获取指定的仓库列表"""
+    print(f"从指定文件获取仓库列表: {CRAWL_JSON_FILE}")
+    
+    if not CRAWL_JSON_FILE.exists():
+        print(f"❌ 指定的仓库文件不存在: {CRAWL_JSON_FILE}")
+        return []
+    
+    try:
+        with open(CRAWL_JSON_FILE, 'r', encoding='utf-8') as f:
+            crawl_data = json.load(f)
+        
+        # 收集所有类别的仓库
+        all_repos = []
+        for category, repos in crawl_data.items():
+            print(f"✅ 加载类别 '{category}': {len(repos)} 个仓库")
+            for repo_name in repos:
+                all_repos.append(repo_name)
+        
+        print(f"✅ 总共加载 {len(all_repos)} 个指定仓库")
+        
+        # 为每个仓库获取详细信息
+        detailed_repos = []
+        with tqdm(all_repos, desc="获取仓库信息", unit="repo") as pbar:
+            for repo_name in pbar:
+                pbar.set_description(f"获取: {repo_name}")
+                try:
+                    repo_info = get_repository_info(repo_name)
+                    if repo_info:
+                        detailed_repos.append(repo_info)
+                        pbar.write(f"  ✅ {repo_name}: Stars {repo_info['stargazers_count']}")
+                    else:
+                        pbar.write(f"  ❌ {repo_name}: 获取信息失败")
+                except Exception as e:
+                    pbar.write(f"  ❌ {repo_name}: {str(e)}")
+                    continue
+                
+                time.sleep(0.5)  # 避免API限制
+        
+        print(f"✅ 成功获取 {len(detailed_repos)} 个仓库的详细信息")
+        return detailed_repos
+        
+    except Exception as e:
+        print(f"❌ 读取指定仓库文件失败: {e}")
+        return []
+
+def get_repository_info(repo_name: str) -> Dict:
+    """获取单个仓库的详细信息"""
+    try:
+        repo_url = f"https://api.github.com/repos/{repo_name}"
+        response = requests.get(repo_url, headers=HEADERS)
+        response.raise_for_status()
+        
+        repo_data = response.json()
+        
+        # 返回与get_candidate_repos相同格式的数据
+        return {
+            'full_name': repo_data['full_name'],
+            'stargazers_count': repo_data['stargazers_count'],
+            'size': repo_data['size'],
+            'topics': repo_data.get('topics', []),
+            'language': repo_data.get('language', ''),
+            'archived': repo_data.get('archived', False),
+            'disabled': repo_data.get('disabled', False),
+            'fork': repo_data.get('fork', False),
+        }
+        
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            print(f"  ⚠️ 仓库不存在: {repo_name}")
+        else:
+            print(f"  ⚠️ 获取仓库信息失败: {repo_name} - {e}")
+        return None
+    except Exception as e:
+        print(f"  ⚠️ 获取仓库信息异常: {repo_name} - {e}")
+        return None
+
+def get_repositories_to_process(use_cache: bool = True, crawl_mode: str = None) -> Tuple[List[Dict], Dict[str, Repository]]:
     """获取需要处理的仓库列表和已处理的仓库"""
     # 加载已处理的仓库缓存
     processed_repos = load_processed_repos() if use_cache else {}
     
-    # 获取候选仓库
-    candidate_repos = get_candidate_repos()
+    # 确定爬取模式
+    mode = crawl_mode or CRAWL_MODE
+    
+    # 根据模式获取候选仓库
+    if mode == "specified":
+        print("🎯 使用指定仓库模式")
+        candidate_repos = get_specified_repos()
+    else:
+        print("⭐ 使用按star数筛选模式")
+        candidate_repos = get_candidate_repos()
+    
     if not candidate_repos:
         return [], processed_repos
 

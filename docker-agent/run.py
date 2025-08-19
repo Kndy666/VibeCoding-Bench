@@ -1,164 +1,313 @@
 import logging
-from docker_setup import (
-    setup_container_and_environment,
-    apply_patches,
-    checkout_commit,
-    cleanup_container,
-    save_container_image
-)
-from agent_executor import (
-    run_tests_in_container,
-    call_trae_agent,
-)
-from typing import Dict
 import json
-from collections import defaultdict
-from pathlib import Path
-from typing import Any, List
 import signal
 import sys
-import os
+import shutil
+from pathlib import Path
+from collections import defaultdict
+from typing import Dict, List, Any
 
-# 获取当前脚本所在目录
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+from agent_config import AgentConfig
+from agent_executor import AgentExecutor, AgentTaskType
+from docker_setup import DockerEnvironmentManager, ContainerOperator
 
-# 统一配置所有模块的日志到一个文件
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(SCRIPT_DIR, 'docker_agent.log'), encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-
-logger = logging.getLogger(__name__)
-
-ANALYSIS_FILE = Path("data_collect/output/analysis_results.json")
-
-# 全局变量存储当前活动的容器
-active_containers = []
-cleanup_in_progress = False  # 添加清理状态标志
-
-def signal_handler(signum, frame):
-    """处理终止信号"""
-    global cleanup_in_progress
+class DockerAgentRunner:
+    """Docker Agent运行器类"""
     
-    if cleanup_in_progress:
-        logger.info("清理已在进行中，忽略重复信号")
-        return
+    def __init__(self, config_path: str = "config.toml"):
+        self.config = AgentConfig(config_path)
+        self.docker_executor = AgentExecutor(self.config, use_docker=True)
+        self.local_executor = AgentExecutor(self.config, use_docker=False)
+        self.active_containers = []
+        self.cleanup_in_progress = False
+        self.docker_manager = DockerEnvironmentManager()
+        self.base_path = Path(__file__).parent
         
-    cleanup_in_progress = True
-    logger.info(f"\n收到信号 {signum}，正在清理容器...")
-    
-    for container in active_containers[:]:  # 创建副本避免修改原列表
-        if container:
-            try:
-                # 询问用户是否删除容器
+        # 配置日志
+        self._setup_logging()
+        
+        # 注册信号处理器
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        self.logger = logging.getLogger(__name__)
+
+    def _setup_logging(self):
+        """配置日志"""
+        logging.basicConfig(
+            level=getattr(logging, self.config.log_level),
+            format=self.config.log_format,
+            handlers=[
+                logging.FileHandler(self.config.log_file, encoding='utf-8'),
+                logging.StreamHandler()
+            ]
+        )
+
+    def _signal_handler(self, signum, frame):
+        """处理终止信号"""
+        if self.cleanup_in_progress:
+            self.logger.info("清理已在进行中，忽略重复信号")
+            return
+            
+        self.cleanup_in_progress = True
+        self.logger.info(f"\n收到信号 {signum}，正在清理容器...")
+        
+        for container in self.active_containers[:]:
+            if container:
                 try:
-                    response = input(f"\n是否要删除容器 {container.name}? (y/N): ").strip().lower()
-                    force_remove = response in ['y', 'yes']
-                except (EOFError, KeyboardInterrupt):
-                    force_remove = False  # 默认不删除容器
-                    logger.info("用户中断输入，默认保留容器")
+                    try:
+                        response = input(f"\n是否要删除容器 {container.name}? (y/N): ").strip().lower()
+                        force_remove = response in ['y', 'yes']
+                    except (EOFError, KeyboardInterrupt):
+                        force_remove = False
+                        self.logger.info("用户中断输入，默认保留容器")
+                    
+                    self.docker_manager.cleanup_container(container, force_remove=force_remove)
+                    self.active_containers.remove(container)
+                except Exception as e:
+                    self.logger.error(f"清理容器 {container.name} 时出错: {e}")
+        
+        self.cleanup_in_progress = False
+        sys.exit(0)
+
+    def _load_specs(self) -> Dict[str, List[Dict[str, Any]]]:
+        """加载并按仓库分组specs"""
+        with self.config.analysis_file.open("r", encoding="utf-8") as f:
+            specs = json.load(f)
+
+        specs_by_repo = defaultdict(list)
+        for spec in specs:
+            repo = spec["repo"]
+            specs_by_repo[repo].append(spec)
+        
+        return specs_by_repo
+
+    def _save_specs(self, specs_by_repo: Dict[str, List[Dict[str, Any]]]):
+        """保存specs到文件"""
+        updated_specs = []
+        for all_repo_specs in specs_by_repo.values():
+            updated_specs.extend(all_repo_specs)
+        
+        with self.config.analysis_file.open("w", encoding="utf-8") as f:
+            json.dump(updated_specs, f, indent=2, ensure_ascii=False)
+
+    def _setup_repo_environment(self, container, repo: str, repo_name: str, first_spec: Dict[str, Any]):
+        """设置仓库环境"""
+        self.logger.info(f"第二阶段：为仓库 {repo} 配置环境")
+
+        self._restore_setup_files(repo, repo_name)
+        
+        self.docker_executor.call_trae_agent(
+            repo_name,
+            first_spec["instance_id"], AgentTaskType.ENV_SETUP, container
+        )
+
+    def _prepare_setup_files(self, repo: str, repo_name: str, first_spec: Dict[str, Any]):
+        # 检查是否已经存在该仓库的配置文件列表
+        swap_dir = self.base_path / "swap"
+        setup_files_json = swap_dir / "setup_files_list.json"
+        
+        if setup_files_json.exists():
+            try:
+                with setup_files_json.open("r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
                 
-                cleanup_container(container, force_remove=force_remove)
-                active_containers.remove(container)  # 从列表中移除已清理的容器
+                if repo in existing_data:
+                    self.logger.info(f"仓库 {repo} 的配置文件列表已存在，跳过第一阶段")
+                    return
             except Exception as e:
-                logger.error(f"清理容器 {container.name} 时出错: {e}")
-    
-    cleanup_in_progress = False
-    sys.exit(0)
+                self.logger.warning(f"读取现有配置文件列表时出错: {e}")
+        
+        operator = ContainerOperator(repo=repo)
+        operator.repo_clone(use_docker=False)
+
+        operator.checkout_commit(first_spec["base_commit"], use_docker=False)
+
+        self.logger.info(f"第一阶段：为仓库 {repo} 列出环境配置文件")
+        self.local_executor.call_trae_agent( 
+            repo_name, 
+            f"{first_spec['instance_id']}", AgentTaskType.FILE_LIST
+        )
+        self._transfer_and_merge_setup_files(repo, repo_name)
+
+    def _transfer_and_merge_setup_files(self, repo: str, repo_name: str):
+        """将生成的JSON文件转移到swap目录并按仓库合并"""
+        try:
+            # 定义文件路径
+            base_dir = self.base_path / "swap" / repo_name
+            swap_dir = self.base_path / "swap"
+            
+            # 定义要处理的文件
+            files_to_process = [
+                "recommended_python_version.json",
+                "setup_files_list.json"
+            ]
+            
+            for filename in files_to_process:
+                source_file = base_dir / filename
+                target_file = swap_dir / filename
+                
+                if source_file.exists():
+                    # 读取源文件数据
+                    with source_file.open("r", encoding="utf-8") as f:
+                        new_data = json.load(f)
+                    
+                    # 准备要合并的数据
+                    merged_data = {}
+                    
+                    # 如果目标文件已存在，读取现有数据
+                    if target_file.exists():
+                        with target_file.open("r", encoding="utf-8") as f:
+                            merged_data = json.load(f)
+                    
+                    # 将新数据以repo为key合并
+                    merged_data[repo] = new_data
+                    
+                    # 写入合并后的数据
+                    with target_file.open("w", encoding="utf-8") as f:
+                        json.dump(merged_data, f, indent=2, ensure_ascii=False)
+                    
+                    self.logger.info(f"已将 {filename} 转移并合并到 {target_file}")
+                    
+                    # 删除源文件
+                    source_file.unlink()
+                else:
+                    self.logger.warning(f"源文件不存在: {source_file}")
+                    
+        except Exception as e:
+            self.logger.error(f"转移和合并设置文件时出错: {str(e)}")
+
+    def _restore_setup_files(self, repo: str, repo_name: str):
+        """将swap目录中的配置文件恢复到对应的仓库目录"""
+        try:
+            # 定义文件路径
+            base_dir = self.base_path / "swap" / repo_name
+            swap_dir = self.base_path / "swap"
+            
+            # 确保目标目录存在
+            base_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 定义要处理的文件
+            files_to_restore = [
+                "recommended_python_version.json",
+                "setup_files_list.json"
+            ]
+            
+            for filename in files_to_restore:
+                source_file = swap_dir / filename
+                target_file = base_dir / filename
+                
+                if source_file.exists():
+                    # 读取合并后的数据
+                    with source_file.open("r", encoding="utf-8") as f:
+                        merged_data = json.load(f)
+                    
+                    # 如果存在该仓库的数据，则恢复
+                    if repo in merged_data:
+                        repo_data = merged_data[repo]
+                        
+                        # 写入仓库特定的数据
+                        with target_file.open("w", encoding="utf-8") as f:
+                            json.dump(repo_data, f, indent=2, ensure_ascii=False)
+                        
+                        self.logger.info(f"已恢复 {filename} 到 {target_file}")
+                    else:
+                        self.logger.warning(f"在 {filename} 中未找到仓库 {repo} 的数据")
+                else:
+                    self.logger.warning(f"合并文件不存在: {source_file}")
+                    
+        except Exception as e:
+            self.logger.error(f"恢复设置文件时出错: {str(e)}")
+
+    def _process_spec(self, container, spec: Dict[str, Any], repo_name: str):
+        """处理单个spec"""
+        if spec.get("processed", False):
+            self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
+            return
+
+        operator = ContainerOperator(repo_name, container)
+        operator.checkout_commit(repo_name, spec["base_commit"])
+
+        # 应用测试补丁并运行测试
+        operator.apply_patches(spec["test_patch"], repo_name)
+        pre_passed, pre_logs = self.docker_executor.run_tests_in_container(
+            container, spec["test_files"], repo_name
+        )
+        self.logger.info(f"patch前通过的测试文件: {sorted(pre_passed)}")
+
+        # 应用主补丁并运行测试
+        operator.apply_patches(spec.get("patch", []), repo_name)
+        post_passed, post_logs = self.docker_executor.run_tests_in_container(
+            container, spec["test_files"], repo_name
+        )
+        self.logger.info(f"patch后通过的测试文件: {sorted(post_passed)}")
+
+        # 计算结果
+        pass_to_pass = pre_passed & post_passed
+        fail_to_pass = post_passed - pre_passed
+
+        spec["PASS_TO_PASS"] = ", ".join(sorted(pass_to_pass)) if pass_to_pass else "None"
+        spec["FAIL_TO_PASS"] = ", ".join(sorted(fail_to_pass)) if fail_to_pass else "None"
+        spec["post_passed"] = list(post_passed)
+        spec["pre_passed"] = list(pre_passed)
+        spec["processed"] = True
+
+        self.logger.info("=== 测试结果总结 ===")
+        self.logger.info(f"前后均通过的测试: {spec['PASS_TO_PASS']}")
+        self.logger.info(f"仅patch后通过的测试: {spec['FAIL_TO_PASS']}")
+
+    def run(self):
+        """主运行方法"""
+        specs_by_repo = self._load_specs()
+
+        for repo, repo_specs in list(specs_by_repo.items()):
+            for spec in repo_specs[:self.config.max_specs_per_repo]:
+                container = None
+                repo_name = repo.split('/')[-1]
+                
+                try:
+
+                    self._prepare_setup_files(repo, repo_name, spec)
+                    container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])
+                    
+                    self.active_containers.append(container)
+                    try:
+                        self._setup_repo_environment(container, repo, repo_name, spec)
+                        
+                        # 保存镜像
+                        try:
+                            self.docker_manager.cache_manager.save_container_as_image(container)
+                            self.logger.info(f"已为仓库 {repo}#{spec["instance_id"].split("-")[-1]} 保存配置后的镜像")
+                        except Exception as save_err:
+                            self.logger.error(f"保存仓库 {repo}#{spec["instance_id"].split("-")[-1]} 镜像失败: {str(save_err)}")
+
+                    except Exception as setup_err:
+                        self.logger.error(f"为仓库 {repo}#{spec["instance_id"].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
+                        continue
+                    
+                    try:
+                        self._process_spec(container, spec, repo_name)
+                        
+                        # 立即保存结果
+                        self._save_specs(specs_by_repo)
+                        self.logger.info(f"已保存 {spec['instance_id']} 的结果")
+
+                    except Exception as inst_err:
+                        self.logger.error(f"处理 {spec['instance_id']} 时出错: {str(inst_err)}")
+                        
+                except Exception as repo_err:
+                    self.logger.error(f"处理仓库 {repo} 时出错: {str(repo_err)}")
+                finally:
+                    if container is not None and not self.cleanup_in_progress:
+                        if container in self.active_containers:
+                            self.active_containers.remove(container)
+                        self.docker_manager.cleanup_container(container, force_remove=True)
+
+        self.logger.info("所有处理完成")
 
 def main():
-    # 注册信号处理器
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
-    
-    # 读取并按 repo 分组
-    with ANALYSIS_FILE.open("r", encoding="utf-8") as f:
-        specs: List[Dict[str, Any]] = json.load(f)
-
-    specs_by_repo: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for spec in specs:
-        repo = spec["repo"]
-        specs_by_repo[repo].append(spec)
-
-    # 跟踪已保存镜像的仓库
-    saved_repos = set()
-
-    # 每个仓库只配置/启动一次容器
-    for repo, repo_specs in specs_by_repo.items():
-        container = None
-        repo_name = repo.split('/')[-1]
-        try:
-            container = setup_container_and_environment(repo)
-            active_containers.append(container)  # 添加到活动容器列表
-            
-            for spec in repo_specs[:3]:
-                # 检查是否已经处理过
-                if spec.get("processed", False):
-                    logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
-                    continue
-                    
-                try:
-                    checkout_commit(container, repo_name, spec["base_commit"])
-                    call_trae_agent(container, repo_name, spec["test_files"], spec["instance_id"])
-
-                    # 在第一次call_trae_agent后保存镜像
-                    if repo not in saved_repos:
-                        try:
-                            save_container_image(container, repo)
-                            saved_repos.add(repo)
-                            logger.info(f"已为仓库 {repo} 保存配置后的镜像")
-                        except Exception as save_err:
-                            logger.error(f"保存仓库 {repo} 镜像失败: {str(save_err)}")
-
-                    test_modified_files = apply_patches(container, spec["test_patch"], repo_name)
-                    pre_passed, pre_logs = run_tests_in_container(container, spec["test_files"], repo_name)
-                    logger.info(f"patch前通过的测试文件: {sorted(pre_passed)}")
-                    logger.debug(f"patch前测试日志:\n{pre_logs}")
-
-                    main_modified_files = apply_patches(container, spec.get("patch", []), repo_name)
-                    post_passed, post_logs = run_tests_in_container(container, spec["test_files"], repo_name)
-                    logger.info(f"patch后通过的测试文件: {sorted(post_passed)}")
-                    logger.debug(f"patch后测试日志:\n{post_logs}")
-
-                    pass_to_pass = pre_passed & post_passed  # 前后都通过
-                    fail_to_pass = post_passed - pre_passed  # 仅patch后通过
-
-                    spec["PASS_TO_PASS"] = ", ".join(sorted(pass_to_pass)) if pass_to_pass else "None"
-                    spec["FAIL_TO_PASS"] = ", ".join(sorted(fail_to_pass)) if fail_to_pass else "None"
-                    spec["post_passed"] = list(post_passed)
-                    spec["pre_passed"] = list(pre_passed)
-                    spec["processed"] = True  # 标记为已处理
-                    
-                    logger.info("=== 测试结果总结 ===")
-                    logger.info(f"前后均通过的测试: {spec['PASS_TO_PASS']}")
-                    logger.info(f"仅patch后通过的测试: {spec['FAIL_TO_PASS']}")
-
-                    # 立即写回文件
-                    updated_specs = []
-                    for all_repo_specs in specs_by_repo.values():
-                        updated_specs.extend(all_repo_specs)
-                    
-                    with ANALYSIS_FILE.open("w", encoding="utf-8") as f:
-                        json.dump(updated_specs, f, indent=2, ensure_ascii=False)
-                    
-                    logger.info(f"已保存 {spec['instance_id']} 的结果到 {ANALYSIS_FILE}")
-
-                except Exception as inst_err:
-                    logger.error(f"处理 {spec['instance_id']} 时出错: {str(inst_err)}")
-        except Exception as inst_err:
-            logger.error(f"处理仓库 {repo} 时出错: {str(inst_err)}")
-        finally:
-            if container is not None and not cleanup_in_progress:  # 只有在非信号清理时才执行
-                # 从活动容器列表中移除
-                if container in active_containers:
-                    active_containers.remove(container)
-                cleanup_container(container, force_remove=True)
-
-    logger.info("所有处理完成")
+    runner = DockerAgentRunner()
+    runner.run()
 
 if __name__ == "__main__":
     main()

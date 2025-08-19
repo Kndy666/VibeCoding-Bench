@@ -37,12 +37,12 @@ def setup_output_directory():
     OUTPUT_DIR.mkdir(exist_ok=True)
     print(f"✅ 输出目录已准备: {OUTPUT_DIR}")
 
-def collect_repositories(use_cache: bool = True) -> List[Repository]:
+def collect_repositories(use_cache: bool = True, crawl_mode: str = None) -> List[Repository]:
     """收集和处理仓库"""
     print("\n🔍 === 步骤1: 收集仓库信息 ===")
     
     # 获取需要处理的仓库列表和已处理的仓库
-    pre_filtered_repos, processed_repos = get_repositories_to_process(use_cache)
+    pre_filtered_repos, processed_repos = get_repositories_to_process(use_cache, crawl_mode)
     
     if not pre_filtered_repos:
         print("❌ 没有仓库通过初步筛选")
@@ -200,6 +200,8 @@ def main():
                        help='只执行release分析，跳过仓库收集')
     parser.add_argument('--enhance-only', action='store_true',
                        help='只执行PR增强分析，跳过前面步骤')
+    parser.add_argument('--crawl-mode', choices=['stars', 'specified'], default='specified',
+                       help='选择爬取模式: stars(按star数筛选) 或 specified(使用指定仓库列表)')
     
     args = parser.parse_args()
     
@@ -215,7 +217,7 @@ def main():
     try:
         if not args.analyze_only and not args.enhance_only:
             # 步骤1: 收集仓库
-            repositories = collect_repositories(use_cache=use_cache)
+            repositories = collect_repositories(use_cache=use_cache, crawl_mode=args.crawl_mode)
             
             if not repositories:
                 print("❌ 没有收集到有效仓库，程序结束")
