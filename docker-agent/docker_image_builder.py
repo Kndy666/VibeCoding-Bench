@@ -34,8 +34,8 @@ class DockerImageBuilder:
         try:
             if version_file.exists():
                 version = json.loads(version_file.read_text())
-                self.logger.info(f"从文件读取到Python版本: {version[repo.replace('_', '/')]}")
-                return version[repo.replace("_", "/")]
+                self.logger.info(f"从文件读取到Python版本: {version[repo]}")
+                return version[repo]
             else:
                 default_version = self.config['execution']['default_python_version']
                 self.logger.info(f"未找到版本文件，使用默认版本: {default_version}")

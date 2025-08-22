@@ -1,9 +1,9 @@
 import docker
-import os
+import re
 import base64
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import docker.models.containers
 from command_executor import LocalCommandExecutor, DockerCommandExecutor, docker_environment
 from docker_image_builder import DockerImageBuilder
@@ -16,6 +16,7 @@ class CacheManager:
         self.client = docker.from_env(timeout=timeout)
         self.repo = repo.replace("/", "_")
         self.repo_id = repo_id
+        self.repo_lower = self.repo.lower()
         self.image_builder = DockerImageBuilder(timeout)
         self.base_path = Path(__file__).parent
     
@@ -49,7 +50,8 @@ class CacheManager:
     def save_container_as_image(self, container: docker.models.containers.Container) -> str:
         """保存容器为新的镜像"""
 
-        image_name = f"cached_{self.repo}"
+        # 镜像名必须小写
+        image_name = f"cached_{self.repo_lower}"
         
         try:
             self.logger.info(f"正在保存容器为镜像: {image_name}")
@@ -67,7 +69,7 @@ class CacheManager:
     def check_cached_image(self) -> bool:
         """检查是否存在缓存的镜像"""
 
-        image_name = f"cached_{self.repo}:{self.repo_id}"
+        image_name = f"cached_{self.repo_lower}:{self.repo_id}"
         
         try:
             self.client.images.get(image_name)
@@ -83,7 +85,7 @@ class CacheManager:
     def create_container_from_cached_image(self) -> docker.models.containers.Container:
         """从缓存镜像创建容器"""
 
-        image_name = f"cached_{self.repo}:{self.repo_id}"
+        image_name = f"cached_{self.repo_lower}:{self.repo_id}"
         
         self.logger.info(f"从缓存镜像创建容器: {image_name}")
         
@@ -198,7 +200,7 @@ class ContainerOperator:
         
         for cmd in commands:
             if use_docker:
-                exit_code, output = self.docker_executor.execute(cmd, Path("/workdir/swap") / self.repo_name)
+                exit_code, output = self.docker_executor.execute(cmd, str(Path("/workdir/swap") / self.repo_name))
             else:
                 exit_code, output = self.local_executor.execute(cmd, self.base_path / "swap" / self.repo_name)
 
@@ -245,7 +247,7 @@ class ContainerOperator:
             # 应用patch到目标文件
             apply_cmd = "patch -p1 < /tmp/patch.tmp"
             if use_docker:
-                exit_code, output = self.docker_executor.execute(apply_cmd, Path("/workdir/swap") / self.repo_name)
+                exit_code, output = self.docker_executor.execute(apply_cmd, str(Path("/workdir/swap") / self.repo_name))
             else:
                 exit_code, output = self.local_executor.execute(apply_cmd, self.base_path / "swap" / self.repo_name)
             
@@ -257,6 +259,38 @@ class ContainerOperator:
             self.logger.info(f"成功应用patch到: {filename}")
         
         return modified_files
+    def run_tests_in_container(self, test_files: List[str], repo_name: str) -> tuple[Set[str], str]:
+        """在容器中运行测试并返回通过的测试文件和日志"""
+        test_files = " ".join(test_files)
+        cmd = f"python3 -m pytest -rA {test_files}"
+
+        exit_code, output = self.docker_executor.execute_stream(cmd, workdir=f"/workdir/swap/{repo_name}")
+        passed_files = self.parse_pytest_output(output, test_files)
+
+        return passed_files, output
+
+    def parse_pytest_output(self, logs: str, test_files: List[str]) -> Set[str]:
+        """解析pytest输出，提取完全通过测试的文件（无失败和错误）"""
+        # 存储所有出现过的测试文件及其状态
+        file_status = {}
+        # 匹配测试结果行中的文件名
+        pattern = r"(PASSED|FAILED|ERROR)\s+([\w/]+.py)(?:::|$)"
+
+        for line in logs.split("\n"):
+            match = re.search(pattern, line)
+            if match:
+                status, file_name = match.groups()
+                # 验证文件是否在测试列表中
+                if any(file_name.endswith(tf) or tf.endswith(file_name) for tf in test_files):
+                    # 首次出现该文件时初始化状态为通过
+                    if file_name not in file_status:
+                        file_status[file_name] = True  # True表示通过
+                    # 如果出现失败或错误，标记为不通过
+                    if status in ("FAILED", "ERROR"):
+                        file_status[file_name] = False
+
+        # 只返回状态为通过的文件
+        return set(file for file, status in file_status.items() if status)
 
 class DockerEnvironmentManager:
     """Docker环境管理器"""
@@ -293,6 +327,3 @@ class DockerEnvironmentManager:
                     
             except Exception as e:
                 self.logger.error(f"处理容器时出错: {str(e)}")
-                container.stop()
-                container.remove()
-                self.logger.info(f"容器 {container.name} 已删除")

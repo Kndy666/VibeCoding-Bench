@@ -15,6 +15,8 @@ terminal_width = terminal_size.columns
 terminal_height = terminal_size.lines
 
 # 定义需要注入的环境变量
+PROXY_URL = "http://127.0.0.1:58591"
+
 docker_environment = {
     # "http_proxy": PROXY_URL,
     # "https_proxy": PROXY_URL,
@@ -234,7 +236,3 @@ class DockerCommandExecutor(BaseCommandExecutor):
         except Exception as e:
             self.logger.error(f"Docker流式命令执行出错: {e}")
             return 1, str(e)
-    
-    def _execute_stream_internal(self, command: str, workdir: str = "/workdir") -> Tuple[int, str]:
-        """内部流式执行方法"""
-        return self.execute_stream(command, workdir)

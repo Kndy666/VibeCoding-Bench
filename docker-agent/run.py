@@ -91,7 +91,7 @@ class DockerAgentRunner:
         with self.config.analysis_file.open("w", encoding="utf-8") as f:
             json.dump(updated_specs, f, indent=2, ensure_ascii=False)
 
-    def _setup_repo_environment(self, container, repo: str, repo_name: str, first_spec: Dict[str, Any]):
+    def _setup_repo_environment(self, container, repo: str, repo_name: str, spec: Dict[str, Any]):
         """设置仓库环境"""
         self.logger.info(f"第二阶段：为仓库 {repo} 配置环境")
 
@@ -99,34 +99,35 @@ class DockerAgentRunner:
         
         self.docker_executor.call_trae_agent(
             repo_name,
-            first_spec["instance_id"], AgentTaskType.ENV_SETUP, container
+            spec["instance_id"], AgentTaskType.ENV_SETUP, spec["created_at"], container
         )
 
-    def _prepare_setup_files(self, repo: str, repo_name: str, first_spec: Dict[str, Any]):
+    def _prepare_setup_files(self, repo: str, repo_name: str, spec: Dict[str, Any]):
         # 检查是否已经存在该仓库的配置文件列表
         swap_dir = self.base_path / "swap"
         setup_files_json = swap_dir / "setup_files_list.json"
+        operator = ContainerOperator(repo=repo)
         
         if setup_files_json.exists():
             try:
                 with setup_files_json.open("r", encoding="utf-8") as f:
                     existing_data = json.load(f)
-                
-                if repo in existing_data:
+
+                if repo.replace("/", "_") in existing_data:
+                    operator.checkout_commit(spec["base_commit"], use_docker=False)
                     self.logger.info(f"仓库 {repo} 的配置文件列表已存在，跳过第一阶段")
                     return
             except Exception as e:
                 self.logger.warning(f"读取现有配置文件列表时出错: {e}")
         
-        operator = ContainerOperator(repo=repo)
         operator.repo_clone(use_docker=False)
 
-        operator.checkout_commit(first_spec["base_commit"], use_docker=False)
+        operator.checkout_commit(spec["base_commit"], use_docker=False)
 
         self.logger.info(f"第一阶段：为仓库 {repo} 列出环境配置文件")
         self.local_executor.call_trae_agent( 
             repo_name, 
-            f"{first_spec['instance_id']}", AgentTaskType.FILE_LIST
+            spec['instance_id'], AgentTaskType.FILE_LIST
         )
         self._transfer_and_merge_setup_files(repo, repo_name)
 
@@ -139,40 +140,54 @@ class DockerAgentRunner:
             
             # 定义要处理的文件
             files_to_process = [
-                "recommended_python_version.json",
+                "recommended_python_version",  # 不带扩展名，后续处理
                 "setup_files_list.json"
             ]
             
             for filename in files_to_process:
-                source_file = base_dir / filename
-                target_file = swap_dir / filename
-                
-                if source_file.exists():
-                    # 读取源文件数据
-                    with source_file.open("r", encoding="utf-8") as f:
-                        new_data = json.load(f)
-                    
-                    # 准备要合并的数据
+                if filename == "recommended_python_version":
+                    # 检查txt或json输入，输出为json
+                    source_file_txt = base_dir / (filename + ".txt")
+                    source_file_json = base_dir / (filename + ".json")
+                    target_file = swap_dir / (filename + ".json")
+                    if source_file_json.exists():
+                        source_file = source_file_json
+                    elif source_file_txt.exists():
+                        source_file = source_file_txt
+                    else:
+                        self.logger.warning(f"源文件不存在: {source_file_txt} 或 {source_file_json}")
+                        continue
+                    with source_file_json.open("r", encoding="utf-8") as f:
+                        new_data = f.read().strip()
+
+                    # 合并到json
                     merged_data = {}
-                    
-                    # 如果目标文件已存在，读取现有数据
                     if target_file.exists():
                         with target_file.open("r", encoding="utf-8") as f:
                             merged_data = json.load(f)
-                    
-                    # 将新数据以repo为key合并
-                    merged_data[repo] = new_data
-                    
-                    # 写入合并后的数据
+                    merged_data[repo.replace("/", "_")] = new_data
                     with target_file.open("w", encoding="utf-8") as f:
                         json.dump(merged_data, f, indent=2, ensure_ascii=False)
-                    
-                    self.logger.info(f"已将 {filename} 转移并合并到 {target_file}")
-                    
+                    self.logger.info(f"已将 recommended_python_version 转移并合并到 {target_file}")
                     # 删除源文件
                     source_file.unlink()
                 else:
-                    self.logger.warning(f"源文件不存在: {source_file}")
+                    source_file = base_dir / filename
+                    target_file = swap_dir / filename
+                    if source_file.exists():
+                        with source_file.open("r", encoding="utf-8") as f:
+                            new_data = json.load(f)
+                        merged_data = {}
+                        if target_file.exists():
+                            with target_file.open("r", encoding="utf-8") as f:
+                                merged_data = json.load(f)
+                        merged_data[repo.replace("/", "_")] = new_data
+                        with target_file.open("w", encoding="utf-8") as f:
+                            json.dump(merged_data, f, indent=2, ensure_ascii=False)
+                        self.logger.info(f"已将 {filename} 转移并合并到 {target_file}")
+                        source_file.unlink()
+                    else:
+                        self.logger.warning(f"源文件不存在: {source_file}")
                     
         except Exception as e:
             self.logger.error(f"转移和合并设置文件时出错: {str(e)}")
@@ -189,6 +204,7 @@ class DockerAgentRunner:
             
             # 定义要处理的文件
             files_to_restore = [
+                # 只输出json
                 "recommended_python_version.json",
                 "setup_files_list.json"
             ]
@@ -198,18 +214,12 @@ class DockerAgentRunner:
                 target_file = base_dir / filename
                 
                 if source_file.exists():
-                    # 读取合并后的数据
                     with source_file.open("r", encoding="utf-8") as f:
                         merged_data = json.load(f)
-                    
-                    # 如果存在该仓库的数据，则恢复
-                    if repo in merged_data:
-                        repo_data = merged_data[repo]
-                        
-                        # 写入仓库特定的数据
+                    if repo.replace("/", "_") in merged_data:
+                        repo_data = merged_data[repo.replace("/", "_")]
                         with target_file.open("w", encoding="utf-8") as f:
                             json.dump(repo_data, f, indent=2, ensure_ascii=False)
-                        
                         self.logger.info(f"已恢复 {filename} 到 {target_file}")
                     else:
                         self.logger.warning(f"在 {filename} 中未找到仓库 {repo} 的数据")
@@ -221,25 +231,19 @@ class DockerAgentRunner:
 
     def _process_spec(self, container, spec: Dict[str, Any], repo_name: str):
         """处理单个spec"""
-        if spec.get("processed", False):
-            self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
-            return
 
         operator = ContainerOperator(repo_name, container)
-        operator.checkout_commit(repo_name, spec["base_commit"])
+        operator.checkout_commit(spec["base_commit"], use_docker=False)
 
         # 应用测试补丁并运行测试
         operator.apply_patches(spec["test_patch"], repo_name)
-        pre_passed, pre_logs = self.docker_executor.run_tests_in_container(
-            container, spec["test_files"], repo_name
-        )
+
+        pre_passed, pre_logs = operator.run_tests_in_container(spec["test_files"], repo_name)
         self.logger.info(f"patch前通过的测试文件: {sorted(pre_passed)}")
 
         # 应用主补丁并运行测试
         operator.apply_patches(spec.get("patch", []), repo_name)
-        post_passed, post_logs = self.docker_executor.run_tests_in_container(
-            container, spec["test_files"], repo_name
-        )
+        post_passed, post_logs = operator.run_tests_in_container(spec["test_files"], repo_name)
         self.logger.info(f"patch后通过的测试文件: {sorted(post_passed)}")
 
         # 计算结果
@@ -262,11 +266,14 @@ class DockerAgentRunner:
 
         for repo, repo_specs in list(specs_by_repo.items()):
             for spec in repo_specs[:self.config.max_specs_per_repo]:
+                if spec.get("processed", False):
+                    self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
+                    continue
+
                 container = None
                 repo_name = repo.split('/')[-1]
                 
                 try:
-
                     self._prepare_setup_files(repo, repo_name, spec)
                     container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])
                     
@@ -277,18 +284,19 @@ class DockerAgentRunner:
                         # 保存镜像
                         try:
                             self.docker_manager.cache_manager.save_container_as_image(container)
-                            self.logger.info(f"已为仓库 {repo}#{spec["instance_id"].split("-")[-1]} 保存配置后的镜像")
+                            self.logger.info(f"已为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 保存配置后的镜像")
                         except Exception as save_err:
-                            self.logger.error(f"保存仓库 {repo}#{spec["instance_id"].split("-")[-1]} 镜像失败: {str(save_err)}")
+                            self.logger.error(f"保存仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 镜像失败: {str(save_err)}")
 
                     except Exception as setup_err:
-                        self.logger.error(f"为仓库 {repo}#{spec["instance_id"].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
+                        self.logger.error(f"为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
                         continue
                     
                     try:
                         self._process_spec(container, spec, repo_name)
                         
                         # 立即保存结果
+                        spec["processed"] = True
                         self._save_specs(specs_by_repo)
                         self.logger.info(f"已保存 {spec['instance_id']} 的结果")
 
