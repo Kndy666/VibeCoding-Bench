@@ -200,9 +200,9 @@ class ContainerOperator:
         
         for cmd in commands:
             if use_docker:
-                exit_code, output = self.docker_executor.execute(cmd, str(Path("/workdir/swap") / self.repo_name))
+                exit_code, output = self.docker_executor.execute(cmd, str(Path("/workdir/swap") / self.repo_name), tty=False, timeout=30)
             else:
-                exit_code, output = self.local_executor.execute(cmd, self.base_path / "swap" / self.repo_name)
+                exit_code, output = self.local_executor.execute(cmd, self.base_path / "swap" / self.repo_name, tty=False, timeout=30)
 
             if exit_code != 0:
                 self.logger.error(f"执行命令失败: {cmd}\n错误: {output}")
@@ -236,9 +236,9 @@ class ContainerOperator:
             write_cmd = f"echo '{patch_base64}' | base64 -d > /tmp/patch.tmp"
             
             if use_docker:
-                exit_code, output = self.docker_executor.execute(write_cmd)
+                exit_code, output = self.docker_executor.execute(write_cmd, tty=False, timeout=30)
             else:
-                exit_code, output = self.local_executor.execute(write_cmd)
+                exit_code, output = self.local_executor.execute(write_cmd, tty=False, timeout=30)
                 
             if exit_code != 0:
                 self.logger.error(f"写入patch到临时文件失败: {output}")
@@ -247,10 +247,10 @@ class ContainerOperator:
             # 应用patch到目标文件
             apply_cmd = "patch -p1 < /tmp/patch.tmp"
             if use_docker:
-                exit_code, output = self.docker_executor.execute(apply_cmd, str(Path("/workdir/swap") / self.repo_name))
+                exit_code, output = self.docker_executor.execute(apply_cmd, str(Path("/workdir/swap") / self.repo_name), tty=False, timeout=30)
             else:
-                exit_code, output = self.local_executor.execute(apply_cmd, self.base_path / "swap" / self.repo_name)
-            
+                exit_code, output = self.local_executor.execute(apply_cmd, self.base_path / "swap" / self.repo_name, tty=False, timeout=30)
+
             if exit_code != 0:
                 self.logger.error(f"应用patch到 {filename} 失败: {output}")
                 raise RuntimeError(f"应用patch到 {filename} 失败: {output}")
@@ -261,8 +261,8 @@ class ContainerOperator:
         return modified_files
     def run_tests_in_container(self, test_files: List[str], repo_name: str) -> tuple[Set[str], str]:
         """在容器中运行测试并返回通过的测试文件和日志"""
-        test_files = " ".join(test_files)
-        cmd = f"python3 -m pytest -rA {test_files}"
+        test_files = " ".join([file for file in test_files if file.endswith(".py")])
+        cmd = f"python3 -m pytest -q -rA --tb=no {test_files}"
 
         exit_code, output = self.docker_executor.execute(cmd, f"/workdir/swap/{repo_name}", stream=True, tty=True, timeout=300)
         passed_files = self.parse_pytest_output(output, test_files)

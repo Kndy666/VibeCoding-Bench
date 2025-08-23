@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 import os
-from typing import Optional
+from typing import Optional, List
 import docker.models.containers
 from agent_config import AgentConfig
 from command_executor import LocalCommandExecutor, DockerCommandExecutor
@@ -44,7 +44,7 @@ class AgentExecutor:
             default_version=self.config.default_python_version
         )
 
-    def _generate_env_setup_prompt(self, repo_name: str, created_time: Optional[str] = None) -> str:
+    def _generate_env_setup_prompt(self, repo_name: str, test_files: List[str], created_time: Optional[str] = None) -> str:
         """生成用于配置环境的prompt"""
         template = self.config.env_setup_prompt_template
 
@@ -63,7 +63,8 @@ class AgentExecutor:
             repo_name=repo_name,
             setup_files=self.config.setup_files_name,
             version_file=self.config.version_file_name,
-            created_time=formatted_created_time
+            created_time=formatted_created_time,
+            test_files = ' '.join(test_files) if test_files else "None"
         )
 
     def _build_trae_command(self, prompt: str, repo_name: str, trajectory_file: str) -> str:
@@ -93,7 +94,7 @@ class AgentExecutor:
         logger.info(f"执行trae-agent命令: {'容器内' if self.use_docker else '本机'}")
         
         try:
-            exit_code, output = executor.execute(command, workdir, stream=True, tty=True)
+            exit_code, output = executor.execute(command, workdir, stream=True)
             return exit_code, output
         except Exception as e:
             logger.error(f"命令执行失败: {str(e)}")
@@ -113,7 +114,7 @@ class AgentExecutor:
         return trajectory_path / f"{repo_id}_{timestamp}_{stage}_trajectory.json"
 
     def call_trae_agent(self, repo_name: str, repo_id: str, 
-                       task_type: AgentTaskType, created_time: str = None,
+                       task_type: AgentTaskType, test_files: Optional[List[str]] = None, created_time: str = None,
                        container: Optional[docker.models.containers.Container] = None) -> str:
         """在容器内或本机执行trae-agent命令的主协调函数"""
         
@@ -125,7 +126,7 @@ class AgentExecutor:
             prompt = self._generate_file_list_prompt(repo_name)
             stage = task_type.value
         elif task_type == AgentTaskType.ENV_SETUP:
-            prompt = self._generate_env_setup_prompt(repo_name, created_time)
+            prompt = self._generate_env_setup_prompt(repo_name, test_files, created_time)
             stage = task_type.value
         else:
             raise ValueError(f"不支持的任务类型: {task_type}")

@@ -228,6 +228,7 @@ class DockerCommandExecutor(BaseCommandExecutor):
     def __init__(self, container: docker.models.containers.Container):
         super().__init__()
         self.container = container
+        self.client = docker.from_env()
 
     def execute(self, command: str, workdir: str = "/workdir", stream: bool = False, tty: bool = True, timeout: Optional[float] = None) -> Tuple[int, str]:
         """在Docker容器中执行命令"""
@@ -247,53 +248,44 @@ class DockerCommandExecutor(BaseCommandExecutor):
         else:
             timeout_command = command
             
-        exec_result = self.container.exec_run(
-            f"/bin/bash -c '{timeout_command}'",
+        exec_instance = self.client.api.exec_create(
+            self.container.id,
+            cmd=f"/bin/bash -c '{timeout_command}'",
             workdir=workdir,
             stdout=True,
             stderr=True,
-            stream=stream,
             tty=tty,
             environment=self.env
         )
+        output_stream = self.client.api.exec_start(exec_instance['Id'], stream=stream, tty=tty)
 
         if stream:
             output_lines = []
-            try:
-                for line in exec_result.output:
-                    line_str = line.decode('utf-8', errors='replace')
-                    self.logger.debug(f"命令输出: {line_str.rstrip()}")
-                    print(line_str, end='', flush=True)
-                    output_lines.append(line_str)
-                
-                exec_result.output.close()
-                if hasattr(exec_result, 'wait'):
-                    exec_result.wait()
-                else:
-                    exec_result.reload()
-                
-                # 检查是否因为超时退出
-                if timeout is not None and (exec_result.exit_code == 124 or exec_result.exit_code == 137):
-                    raise TimeoutError(f"Timeout {timeout}s")
-                
-                return exec_result.exit_code, ''.join(output_lines)
-            finally:
-                exec_result.close()
-        else:
-            output = exec_result.output.decode('utf-8', errors='replace')
-            print(output, end='', flush=True)
-            
-            # 检查是否因为超时退出
-            if timeout is not None and (exec_result.exit_code == 124 or exec_result.exit_code == 137):
+            for line in output_stream:
+                line_str = line.decode('utf-8', errors='replace')
+                self.logger.debug(f"命令输出: {line_str.rstrip()}")
+                print(line_str, end='', flush=True)
+                output_lines.append(line_str)
+
+            exit_code = self.client.api.exec_inspect(exec_instance['Id'])['ExitCode']
+            if timeout is not None and (exit_code == 124 or exit_code == 137):
                 raise TimeoutError(f"Timeout {timeout}s")
-            
-            return exec_result.exit_code, output
+
+            return exit_code, ''.join(output_lines)
+        else:
+            output = output_stream.decode('utf-8', errors='replace')
+            print(output, end='', flush=True)
+
+            exit_code = self.client.api.exec_inspect(exec_instance['Id'])['ExitCode']
+            if timeout is not None and (exit_code == 124 or exit_code == 137):
+                raise TimeoutError(f"Timeout {timeout}s")
+
+            return exit_code, output
 
     def _execute_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
-        """在Docker容器中流式执行命令"""
-        self.logger.info(f"Docker容器流式执行命令: {command}")
+        self.logger.info(f"Docker容器pty执行命令: {command}")
         return self._exec(command, workdir, stream, True, timeout)
 
     def _execute_without_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
-        self.logger.info(f"Docker容器非流式执行命令: {command}")
+        self.logger.info(f"Docker容器执行命令: {command}")
         return self._exec(command, workdir, stream, False, timeout)

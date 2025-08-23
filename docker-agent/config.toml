@@ -1,7 +1,7 @@
 [logging]
 level = "INFO"
 format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-log_file = "docker_agent.log"
+log_file = "logs/docker_agent.log"
 
 [proxy]
 enabled = true
@@ -61,19 +61,23 @@ Focus only on identifying files and determining the Python version. Do not attem
 [prompts.env_setup]
 template = """
 Please help me configure the runtime environment for this project.
-The project is {repo_name}. You need to verify if it can successfully run the tests of the project. 
+The project is {repo_name}.
+
+MANDATORY FIRST STEP
+First, read the **{setup_files}** file in the project root to understand which configuration files are available.
+DO NOT PROCEED WITHOUT READING THIS FILE FIRST!
+Then analyze these files to understand the project structure, dependencies, and requirements.
+
+TEST REQUIREMENTS
+You need to verify if it can successfully run the tests of the project.
 You can tolerate a few test cases failures—as long as most tests pass, it's good enough.
 Your test command must output detailed pass/fail status for each test item. This is mandatory. For example, with pytest, use the -rA option to get output like:
 PASSED tests/test_resources.py::test_fetch_centromeres
 PASSED tests/test_vis.py::test_to_ucsc_colorstring
 
-🔴 MANDATORY FIRST STEP 🔴
-First, read the **{setup_files} file** in the project root to understand which configuration files are available.
-DO NOT PROCEED WITHOUT READING THIS FILE FIRST!
+**IMPORTANT:** You must additionally test {test_files}. If these specific tests fail due to ImportError or ModuleNotFound, you should make every effort to install all optional dependencies. For other test files, you may tolerate ImportError or ModuleNotFound errors.
 
-Then analyze these files to understand the project structure, dependencies, and requirements.
-
-🐍 PYTHON VERSION INFORMATION 🐍
+PYTHON VERSION INFORMATION
 **IMPORTANT: About Python versions in this container:**
 - When you run 'python3 --version', it shows the Python version of the current agent environment
 - This is NOT the system Python that you should use for the project
@@ -82,7 +86,7 @@ Then analyze these files to understand the project structure, dependencies, and 
 - You should use the system Python installation, which may be different from what 'python3 --version' shows
 - DO NOT attempt to install or change Python versions - the correct version is already installed in the system
 
-🚀 PREFERRED INSTALLATION METHOD 🚀
+PREFERRED INSTALLATION METHOD
 **CRITICAL: Avoid installing to agent's Python environment**
 - When using any installation tools (uv, pip, pip3), make sure you're NOT installing to the agent's Python environment
 - The agent runs in its own Python environment - you need to use the system Python for project development

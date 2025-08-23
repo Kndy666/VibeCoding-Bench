@@ -14,7 +14,7 @@ from docker_setup import DockerEnvironmentManager, ContainerOperator
 class DockerAgentRunner:
     """Docker Agent运行器类"""
     
-    def __init__(self, config_path: str = "config.toml"):
+    def __init__(self, config_path: str = "config.toml", test_only: bool = False):
         self.config = AgentConfig(config_path)
         self.docker_executor = AgentExecutor(self.config, use_docker=True)
         self.local_executor = AgentExecutor(self.config, use_docker=False)
@@ -22,6 +22,7 @@ class DockerAgentRunner:
         self.cleanup_in_progress = False
         self.docker_manager = DockerEnvironmentManager()
         self.base_path = Path(__file__).parent
+        self.test_only = test_only
         
         # 配置日志
         self._setup_logging()
@@ -99,7 +100,7 @@ class DockerAgentRunner:
         
         self.docker_executor.call_trae_agent(
             repo_name,
-            spec["instance_id"], AgentTaskType.ENV_SETUP, spec["created_at"], container
+            spec["instance_id"], AgentTaskType.ENV_SETUP, [file for file in spec["test_files"] if file.endswith(".py")], spec["created_at"], container
         )
 
     def _prepare_setup_files(self, repo: str, repo_name: str, spec: Dict[str, Any]):
@@ -140,25 +141,20 @@ class DockerAgentRunner:
             
             # 定义要处理的文件
             files_to_process = [
-                "recommended_python_version",  # 不带扩展名，后续处理
+                "recommended_python_version.json",
                 "setup_files_list.json"
             ]
             
             for filename in files_to_process:
-                if filename == "recommended_python_version":
-                    # 检查txt或json输入，输出为json
-                    source_file_txt = base_dir / (filename + ".txt")
-                    source_file_json = base_dir / (filename + ".json")
-                    target_file = swap_dir / (filename + ".json")
-                    if source_file_json.exists():
-                        source_file = source_file_json
-                    elif source_file_txt.exists():
-                        source_file = source_file_txt
+                if filename == "recommended_python_version.json":
+                    source_file = base_dir / filename
+                    target_file = swap_dir / filename
+                    if source_file.exists():
+                        with source_file.open("r", encoding="utf-8") as f:
+                            new_data = f.read().strip()
                     else:
-                        self.logger.warning(f"源文件不存在: {source_file_txt} 或 {source_file_json}")
+                        self.logger.warning(f"源文件不存在: {source_file}")
                         continue
-                    with source_file_json.open("r", encoding="utf-8") as f:
-                        new_data = f.read().strip()
 
                     # 合并到json
                     merged_data = {}
@@ -168,8 +164,7 @@ class DockerAgentRunner:
                     merged_data[repo.replace("/", "_")] = new_data
                     with target_file.open("w", encoding="utf-8") as f:
                         json.dump(merged_data, f, indent=2, ensure_ascii=False)
-                    self.logger.info(f"已将 recommended_python_version 转移并合并到 {target_file}")
-                    # 删除源文件
+                    self.logger.info(f"已将 {filename} 转移并合并到 {target_file}")
                     source_file.unlink()
                 else:
                     source_file = base_dir / filename
@@ -229,6 +224,27 @@ class DockerAgentRunner:
         except Exception as e:
             self.logger.error(f"恢复设置文件时出错: {str(e)}")
 
+    def _save_test_logs(self, repo_name: str, pre_logs: str, post_logs: str):
+        """保存测试日志到 logs/test_logs.json（简化版本）"""
+        logs_file = self.base_path / "logs" / "test_logs.json"
+        logs_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            existing_logs = {}
+            if logs_file.exists():
+                with logs_file.open("r", encoding="utf-8") as f:
+                    existing_logs = json.load(f)
+
+            existing_logs[repo_name] = {
+                "pre_logs": pre_logs,
+                "post_logs": post_logs
+            }
+
+            with logs_file.open("w", encoding="utf-8") as f:
+                json.dump(existing_logs, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存测试日志失败: {e}")
+
     def _process_spec(self, container, spec: Dict[str, Any], repo_name: str):
         """处理单个spec"""
 
@@ -245,6 +261,9 @@ class DockerAgentRunner:
         operator.apply_patches(spec.get("patch", []), repo_name)
         post_passed, post_logs = operator.run_tests_in_container(spec["test_files"], repo_name)
         self.logger.info(f"patch后通过的测试文件: {sorted(post_passed)}")
+        
+        # 保存测试日志
+        self._save_test_logs(repo_name, pre_logs, post_logs)
 
         # 计算结果
         pass_to_pass = pre_passed & post_passed
@@ -266,31 +285,33 @@ class DockerAgentRunner:
 
         for repo, repo_specs in list(specs_by_repo.items()):
             for spec in repo_specs[:self.config.max_specs_per_repo]:
-                if spec.get("processed", False):
-                    self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
-                    continue
+                if not self.test_only:
+                    if spec.get("processed", False):
+                        self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
+                        continue
 
                 container = None
                 repo_name = repo.split('/')[-1]
                 
                 try:
-                    self._prepare_setup_files(repo, repo_name, spec)
-                    container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])
-                    
-                    self.active_containers.append(container)
-                    try:
-                        self._setup_repo_environment(container, repo, repo_name, spec)
-                        
-                        # 保存镜像
+                    if not self.test_only:
+                        self._prepare_setup_files(repo, repo_name, spec)
+                        container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])
                         try:
-                            self.docker_manager.cache_manager.save_container_as_image(container)
-                            self.logger.info(f"已为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 保存配置后的镜像")
-                        except Exception as save_err:
-                            self.logger.error(f"保存仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 镜像失败: {str(save_err)}")
+                            self._setup_repo_environment(container, repo, repo_name, spec)
+                            
+                            # 保存镜像
+                            try:
+                                self.docker_manager.cache_manager.save_container_as_image(container)
+                                self.logger.info(f"已为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 保存配置后的镜像")
+                            except Exception as save_err:
+                                self.logger.error(f"保存仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 镜像失败: {str(save_err)}")
 
-                    except Exception as setup_err:
-                        self.logger.error(f"为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
-                        continue
+                        except Exception as setup_err:
+                            self.logger.error(f"为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
+                            continue
+                    else:
+                        container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])
                     
                     try:
                         self._process_spec(container, spec, repo_name)
@@ -307,14 +328,16 @@ class DockerAgentRunner:
                     self.logger.error(f"处理仓库 {repo} 时出错: {str(repo_err)}")
                 finally:
                     if container is not None and not self.cleanup_in_progress:
-                        if container in self.active_containers:
-                            self.active_containers.remove(container)
                         self.docker_manager.cleanup_container(container, force_remove=True)
 
         self.logger.info("所有处理完成")
 
 def main():
-    runner = DockerAgentRunner()
+    import argparse
+    parser = argparse.ArgumentParser(description="Docker Agent Runner")
+    parser.add_argument("--test-only", action="store_true", help="仅执行测试，跳过环境配置与镜像保存")
+    args = parser.parse_args()
+    runner = DockerAgentRunner(test_only=args.test_only)
     runner.run()
 
 if __name__ == "__main__":
