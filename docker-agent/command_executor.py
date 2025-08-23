@@ -1,6 +1,6 @@
 import subprocess
 import logging
-from typing import Tuple
+from typing import Tuple, Optional
 import docker.models.containers
 from abc import ABC, abstractmethod
 import pty
@@ -8,6 +8,7 @@ import os
 import select
 import fcntl
 import shutil
+import signal
 
 # 获取终端尺寸并定义环境变量
 terminal_size = shutil.get_terminal_size()
@@ -25,132 +26,147 @@ docker_environment = {
     "PYTHONUNBUFFERED": "1"
 }
 
-
 class BaseCommandExecutor(ABC):
     """命令执行器基类"""
-    
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-    
+        env = dict(os.environ)
+        self.env = env.update(docker_environment)
+
+    def _set_timeout(self, timeout, process=None):
+        """设置超时处理"""
+        if timeout is not None:
+            def timeout_handler(signum, frame):
+                if process is not None:
+                    process.terminate()
+                raise TimeoutError(f"Timeout {timeout}s")
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(timeout)
+
+    def _cancel_timeout(self, timeout):
+        """取消超时处理"""
+        if timeout is not None:
+            signal.alarm(0)
+
     @abstractmethod
-    def execute(self, command: str, workdir: str = None, stream: bool = False) -> Tuple[int, str]:
+    def execute(self, command: str, workdir: str, stream: bool = False, tty: bool = True, timeout: Optional[float] = None) -> Tuple[int, str]:
         """执行命令"""
         pass
     
     @abstractmethod
-    def execute_stream(self, command: str, workdir: str = None):
-        """流式执行命令"""
+    def _execute_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
+        """以PTY方式流式执行命令"""
+        pass
+
+    @abstractmethod
+    def _execute_without_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
+        """不使用PTY方式执行命令"""
         pass
 
 
 class LocalCommandExecutor(BaseCommandExecutor):
     """本地命令执行器"""
-    
-    def execute(self, command: str, workdir: str = None, stream: bool = False) -> Tuple[int, str]:
+    def __init__(self):
+        super().__init__()
+
+    def execute(self, command: str, workdir: str, stream: bool = False, tty: bool = True, timeout: Optional[float] = None) -> Tuple[int, str]:
         """在本地执行命令"""
-        self.logger.info(f"本地执行命令: {command}")
-        
         try:
-            # 合并环境变量
-            env = dict(os.environ)
-            env.update(docker_environment)
-            
-            if stream:
-                return self._execute_stream_internal(command, workdir)
+            if tty:
+                return self._execute_pty(command, workdir, stream, timeout)
             else:
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=workdir,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    env=env
-                )
-                return result.returncode, result.stdout + result.stderr
+                return self._execute_without_pty(command, workdir, stream, timeout)
         except Exception as e:
             self.logger.error(f"本地命令执行出错: {e}")
             return 1, str(e)
-    
-    def execute_stream(self, command: str, workdir: str = None):
-        """流式执行本地命令"""
-        self.logger.info(f"本地流式执行命令: {command}")
-        
-        try:
-            return self._execute_with_pty(command, workdir)
-        except Exception as e:
-            self.logger.error(f"PTY执行失败，回退到标准方式: {e}")
-            return self._execute_stream_fallback(command, workdir)
-    
-    def _execute_with_pty(self, command: str, workdir: str = None) -> Tuple[int, str]:
-        """使用PTY执行命令以更好地捕获进度信息"""
+
+    def _setup_pty_process(self, command: str, workdir: str):
+        """设置PTY进程并返回(master_fd, slave_fd, process)"""
         master_fd, slave_fd = pty.openpty()
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=workdir,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            stdin=slave_fd,
+            preexec_fn=os.setsid,
+            env=self.env
+        )
+        os.close(slave_fd)
+        return master_fd, process
+
+    def _execute_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
+        """流式执行本地命令"""
+        self.logger.info(f"本地pty执行命令: {command}")
+        master_fd, process = self._setup_pty_process(command, workdir)
         
+        self._set_timeout(timeout, process)
         try:
-            # 合并环境变量
-            env = dict(os.environ)
-            env.update(docker_environment)
-            
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                cwd=workdir,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                stdin=slave_fd,
-                preexec_fn=os.setsid,
-                env=env
-            )
-            
-            os.close(slave_fd)  # 子进程会使用这个fd，父进程应该关闭它
-            
-            # 设置非阻塞读取
-            fcntl.fcntl(master_fd, fcntl.F_SETFL, os.O_NONBLOCK)
-            
-            output_lines = []
-            
-            while True:
-                # 检查进程是否结束
-                if process.poll() is not None:
-                    # 进程已结束，读取剩余输出
-                    try:
-                        remaining = os.read(master_fd, 4096).decode('utf-8', errors='replace')
-                        if remaining:
-                            print(remaining, end='', flush=True)
-                            output_lines.append(remaining)
-                    except (OSError, BlockingIOError):
-                        pass
-                    break
+            if stream:
+                # 设置非阻塞读取
+                fcntl.fcntl(master_fd, fcntl.F_SETFL, os.O_NONBLOCK)
+                output_lines = []
                 
-                # 使用select等待数据
-                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                while True:
+                    if process.poll() is not None:
+                        try:
+                            remaining = os.read(master_fd, 4096).decode('utf-8', errors='replace')
+                            if remaining:
+                                print(remaining, end='', flush=True)
+                                output_lines.append(remaining)
+                        except (OSError, BlockingIOError):
+                            pass
+                        break
+                    
+                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+                    if ready:
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if data:
+                                text = data.decode('utf-8', errors='replace')
+                                print(text, end='', flush=True)
+                                output_lines.append(text)
+                        except (OSError, BlockingIOError):
+                            continue
                 
-                if ready:
+                process.wait()
+                return process.returncode, ''.join(output_lines)
+            else:
+                output = b""
+                while True:
                     try:
                         data = os.read(master_fd, 4096)
-                        if data:
-                            text = data.decode('utf-8', errors='replace')
-                            print(text, end='', flush=True)
-                            output_lines.append(text)
-                    except (OSError, BlockingIOError):
-                        continue
-            
-            process.wait()
-            return process.returncode, ''.join(output_lines)
-            
+                        if not data:
+                            break
+                        output += data
+                    except OSError:
+                        break
+                    if process.poll() is not None:
+                        try:
+                            while True:
+                                data = os.read(master_fd, 4096)
+                                if not data:
+                                    break
+                                output += data
+                        except OSError:
+                            pass
+                        break
+                process.wait()
+                output = output.decode('utf-8', errors='replace')
+                print(output, end='', flush=True)
+                return process.returncode, output
         finally:
             try:
                 os.close(master_fd)
+                self._cancel_timeout(timeout)
             except OSError:
                 pass
     
-    def _execute_stream_fallback(self, command: str, workdir: str = None) -> Tuple[int, str]:
-        """回退的流式执行方法"""
-        try:
-            # 合并环境变量
-            env = dict(os.environ)
-            env.update(docker_environment)
-            
+    def _execute_without_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
+        """不使用PTY的流式执行方法"""
+        self.logger.info(f"本地执行命令: {command}")
+        if stream:
             process = subprocess.Popen(
                 command,
                 shell=True,
@@ -161,25 +177,49 @@ class LocalCommandExecutor(BaseCommandExecutor):
                 encoding='utf-8',
                 bufsize=0,  # 无缓冲
                 universal_newlines=True,
-                env=env
+                env=self.env
             )
             
+            self._set_timeout(timeout, process)
             output_lines = []
-            for line in process.stdout:
-                self.logger.debug(f"命令输出: {line.rstrip()}")
-                print(line, end='', flush=True)
-                output_lines.append(line)
-            
-            process.wait()
-            return process.returncode, ''.join(output_lines)
-            
-        except Exception as e:
-            self.logger.error(f"回退流式执行本地命令出错: {e}")
-            return 1, str(e)
-    
-    def _execute_stream_internal(self, command: str, workdir: str = None) -> Tuple[int, str]:
-        """内部流式执行方法"""
-        return self.execute_stream(command, workdir)
+            try:
+                for line in process.stdout:
+                    self.logger.debug(f"命令输出: {line.rstrip()}")
+                    print(line, end='', flush=True)
+                    output_lines.append(line)
+                
+                process.wait()
+                return process.returncode, ''.join(output_lines)
+            finally:
+                self._cancel_timeout(timeout)
+        else:
+            if timeout is not None:
+                try:
+                    result = subprocess.run(
+                        command,
+                        shell=True,
+                        cwd=workdir,
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        timeout=timeout,
+                        env=self.env
+                    )
+                except subprocess.TimeoutExpired:
+                    raise TimeoutError(f"Timeout {timeout}s")
+            else:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=workdir,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    env=self.env
+                )
+            output = result.stdout + result.stderr
+            print(output, end='', flush=True)
+            return result.returncode, output
 
 
 class DockerCommandExecutor(BaseCommandExecutor):
@@ -188,51 +228,72 @@ class DockerCommandExecutor(BaseCommandExecutor):
     def __init__(self, container: docker.models.containers.Container):
         super().__init__()
         self.container = container
-        self.environment = docker_environment
-    
-    def execute(self, command: str, workdir: str = "/workdir", stream: bool = False) -> Tuple[int, str]:
+
+    def execute(self, command: str, workdir: str = "/workdir", stream: bool = False, tty: bool = True, timeout: Optional[float] = None) -> Tuple[int, str]:
         """在Docker容器中执行命令"""
-        self.logger.info(f"Docker容器执行命令: {command}")
-        
         try:
-            if stream:
-                return self._execute_stream_internal(command, workdir)
+            if tty:
+                return self._execute_pty(command, workdir, stream, timeout)
             else:
-                exit_code, output = self.container.exec_run(
-                    f"/bin/bash -c '{command}'",
-                    workdir=workdir,
-                    environment=self.environment
-                )
-                return exit_code, output.decode('utf-8', errors='replace')
+                return self._execute_without_pty(command, workdir, stream, timeout)
         except Exception as e:
             self.logger.error(f"Docker命令执行出错: {e}")
             return 1, str(e)
-    
-    def execute_stream(self, command: str, workdir: str = "/workdir"):
+
+    def _exec(self, command: str, workdir: str, stream: bool, tty: bool, timeout: Optional[float]) -> Tuple[int, str]:
+        """公共执行逻辑"""
+        if timeout is not None:
+            timeout_command = f"timeout -s TERM -k 10s {int(timeout)}s {command}"
+        else:
+            timeout_command = command
+            
+        exec_result = self.container.exec_run(
+            f"/bin/bash -c '{timeout_command}'",
+            workdir=workdir,
+            stdout=True,
+            stderr=True,
+            stream=stream,
+            tty=tty,
+            environment=self.env
+        )
+
+        if stream:
+            output_lines = []
+            try:
+                for line in exec_result.output:
+                    line_str = line.decode('utf-8', errors='replace')
+                    self.logger.debug(f"命令输出: {line_str.rstrip()}")
+                    print(line_str, end='', flush=True)
+                    output_lines.append(line_str)
+                
+                exec_result.output.close()
+                if hasattr(exec_result, 'wait'):
+                    exec_result.wait()
+                else:
+                    exec_result.reload()
+                
+                # 检查是否因为超时退出
+                if timeout is not None and (exec_result.exit_code == 124 or exec_result.exit_code == 137):
+                    raise TimeoutError(f"Timeout {timeout}s")
+                
+                return exec_result.exit_code, ''.join(output_lines)
+            finally:
+                exec_result.close()
+        else:
+            output = exec_result.output.decode('utf-8', errors='replace')
+            print(output, end='', flush=True)
+            
+            # 检查是否因为超时退出
+            if timeout is not None and (exec_result.exit_code == 124 or exec_result.exit_code == 137):
+                raise TimeoutError(f"Timeout {timeout}s")
+            
+            return exec_result.exit_code, output
+
+    def _execute_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
         """在Docker容器中流式执行命令"""
         self.logger.info(f"Docker容器流式执行命令: {command}")
-        
-        try:
-            exec_result = self.container.exec_run(
-                f"/bin/bash -c '{command}'",
-                workdir=workdir,
-                stdout=True,
-                stderr=True,
-                stream=True,
-                tty=True,
-                environment=self.environment
-            )
-            
-            output_lines = []
-            for line in exec_result.output:
-                line_str = line.decode('utf-8', errors='replace')
-                self.logger.debug(f"命令输出: {line_str.rstrip()}")
-                print(line_str, end='', flush=True)
-                output_lines.append(line_str)
-            
-            exec_result.output.close() if hasattr(exec_result.output, 'close') else None
-            return exec_result.exit_code, ''.join(output_lines)
-            
-        except Exception as e:
-            self.logger.error(f"Docker流式命令执行出错: {e}")
-            return 1, str(e)
+        return self._exec(command, workdir, stream, True, timeout)
+
+    def _execute_without_pty(self, command: str, workdir: str, stream: bool, timeout: Optional[float]) -> Tuple[int, str]:
+        self.logger.info(f"Docker容器非流式执行命令: {command}")
+        return self._exec(command, workdir, stream, False, timeout)

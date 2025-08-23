@@ -93,7 +93,7 @@ class AgentExecutor:
         logger.info(f"执行trae-agent命令: {'容器内' if self.use_docker else '本机'}")
         
         try:
-            exit_code, output = executor.execute_stream(command, workdir)
+            exit_code, output = executor.execute(command, workdir, stream=True, tty=True)
             return exit_code, output
         except Exception as e:
             logger.error(f"命令执行失败: {str(e)}")

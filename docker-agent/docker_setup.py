@@ -161,7 +161,7 @@ class ContainerOperator:
         """克隆仓库"""
         # 检查目录是否已存在
         if use_docker:
-            check_cmd = f"test -d /workdir/swap/{self.repo_name}"
+            check_cmd = f"test -d swap/{self.repo_name}"
             exit_code, _ = self.docker_executor.execute(check_cmd)
         else:
             repo_path = self.base_path / "swap" / self.repo_name
@@ -179,10 +179,10 @@ class ContainerOperator:
         
         # 使用流式执行命令
         if use_docker:
-            exit_code, output = self.docker_executor.execute_stream(command)
+            exit_code, output = self.docker_executor.execute(command, "/workdir/swap", stream=True, tty=True)
         else:
-            exit_code, output = self.local_executor.execute_stream(command, self.base_path / "swap")
-        
+            exit_code, output = self.local_executor.execute(command, self.base_path / "swap", stream=True, tty=True)
+
         self.logger.info(f"命令完成，返回码: {exit_code}")
         if exit_code is not None and exit_code != 0:
             self.logger.error(f"命令执行失败: {command}\n错误: {output}")
@@ -264,7 +264,7 @@ class ContainerOperator:
         test_files = " ".join(test_files)
         cmd = f"python3 -m pytest -rA {test_files}"
 
-        exit_code, output = self.docker_executor.execute_stream(cmd, workdir=f"/workdir/swap/{repo_name}")
+        exit_code, output = self.docker_executor.execute(cmd, f"/workdir/swap/{repo_name}", stream=True, tty=True, timeout=300)
         passed_files = self.parse_pytest_output(output, test_files)
 
         return passed_files, output

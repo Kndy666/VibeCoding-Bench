@@ -125,7 +125,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-swap/trae_config.yaml
-!swap/trae_config.yaml.template
+docker-agent/swap
 
 data_collect/config.toml
