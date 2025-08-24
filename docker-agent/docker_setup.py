@@ -7,6 +7,8 @@ from typing import List, Dict, Optional, Set
 import docker.models.containers
 from command_executor import LocalCommandExecutor, DockerCommandExecutor, docker_environment
 from docker_image_builder import DockerImageBuilder
+from locate_test import CodeChange
+from pytest_output_parse import TestStatus, PytestResultParser
 
 class CacheManager:
     """容器和镜像缓存管理器"""
@@ -259,38 +261,33 @@ class ContainerOperator:
             self.logger.info(f"成功应用patch到: {filename}")
         
         return modified_files
-    def run_tests_in_container(self, test_files: List[str], repo_name: str) -> tuple[Set[str], str]:
+    def run_tests_in_container(self, test_files: List[Dict[str, CodeChange]], repo_name: str, expected_statuses: Optional[List[TestStatus]] = None) -> tuple[Set[str], str]:
         """在容器中运行测试并返回通过的测试文件和日志"""
-        test_files = " ".join([file for file in test_files if file.endswith(".py")])
-        cmd = f"python3 -m pytest -q -rA --tb=no {test_files}"
-
+        pytest_args = []
+        for test_file in test_files:
+            for file_name, changes in test_file.items():
+                for change in changes:
+                    if change.code_type == 'function':
+                        pytest_args.append(f"{file_name}::{change.name}")
+                    elif change.code_type == 'method':
+                        class_name, method_name = change.name.split('.', 1)
+                        pytest_args.append(f"{file_name}::{class_name}::{method_name}")
+        
+        cmd = f"python3 -m pytest -q -rA --tb=no {' '.join(pytest_args)}"
+        
         exit_code, output = self.docker_executor.execute(cmd, f"/workdir/swap/{repo_name}", stream=True, tty=True, timeout=300)
-        passed_files = self.parse_pytest_output(output, test_files)
+        matched_files = self.parse_pytest_output(output, pytest_args, expected_statuses)
+        return matched_files, output
 
-        return passed_files, output
-
-    def parse_pytest_output(self, logs: str, test_files: List[str]) -> Set[str]:
+    def parse_pytest_output(self, logs: str, test_cases: List[str], expected_statuses: List[TestStatus]) -> Set[str]:
         """解析pytest输出，提取完全通过测试的文件（无失败和错误）"""
-        # 存储所有出现过的测试文件及其状态
-        file_status = {}
-        # 匹配测试结果行中的文件名
-        pattern = r"(PASSED|FAILED|ERROR)\s+([\w/]+.py)(?:::|$)"
-
-        for line in logs.split("\n"):
-            match = re.search(pattern, line)
-            if match:
-                status, file_name = match.groups()
-                # 验证文件是否在测试列表中
-                if any(file_name.endswith(tf) or tf.endswith(file_name) for tf in test_files):
-                    # 首次出现该文件时初始化状态为通过
-                    if file_name not in file_status:
-                        file_status[file_name] = True  # True表示通过
-                    # 如果出现失败或错误，标记为不通过
-                    if status in ("FAILED", "ERROR"):
-                        file_status[file_name] = False
-
-        # 只返回状态为通过的文件
-        return set(file for file, status in file_status.items() if status)
+        
+        parser = PytestResultParser(logs)
+        results = parser.query_tests(test_cases)
+        self.logger.info("查询结果:")
+        for test, status in results.items():
+            self.logger.info(f"  {test}: {status.value}")
+        return set(test for test, status in results.items() if status in expected_statuses)
 
 class DockerEnvironmentManager:
     """Docker环境管理器"""

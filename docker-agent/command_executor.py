@@ -69,7 +69,7 @@ class LocalCommandExecutor(BaseCommandExecutor):
     def __init__(self):
         super().__init__()
 
-    def execute(self, command: str, workdir: str, stream: bool = False, tty: bool = True, timeout: Optional[float] = None) -> Tuple[int, str]:
+    def execute(self, command: str, workdir: str = "/", stream: bool = False, tty: bool = True, timeout: Optional[float] = None) -> Tuple[int, str]:
         """在本地执行命令"""
         try:
             if tty:

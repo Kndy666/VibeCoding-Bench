@@ -10,6 +10,8 @@ from typing import Dict, List, Any
 from agent_config import AgentConfig
 from agent_executor import AgentExecutor, AgentTaskType
 from docker_setup import DockerEnvironmentManager, ContainerOperator
+from locate_test import CodeChange, CodeChangeAnalyzer, PytestFilter
+from pytest_output_parse import TestStatus
 
 class DockerAgentRunner:
     """Docker Agent运行器类"""
@@ -252,32 +254,52 @@ class DockerAgentRunner:
         operator.checkout_commit(spec["base_commit"], use_docker=False)
 
         # 应用测试补丁并运行测试
+        test_code_before = self._get_test_code(spec, repo_name)
         operator.apply_patches(spec["test_patch"], repo_name)
+        test_code_after = self._get_test_code(spec, repo_name)
 
-        pre_passed, pre_logs = operator.run_tests_in_container(spec["test_files"], repo_name)
-        self.logger.info(f"patch前通过的测试文件: {sorted(pre_passed)}")
+        test_func = self._get_test_func(test_code_before, test_code_after)
+
+        pre_failed, pre_logs = operator.run_tests_in_container(test_func, repo_name, [TestStatus.FAILED, TestStatus.ERROR])
+        self.logger.info(f"patch前未通过的测试文件: {sorted(pre_failed)}")
 
         # 应用主补丁并运行测试
         operator.apply_patches(spec.get("patch", []), repo_name)
-        post_passed, post_logs = operator.run_tests_in_container(spec["test_files"], repo_name)
+        post_passed, post_logs = operator.run_tests_in_container(test_func, repo_name, [TestStatus.PASSED])
         self.logger.info(f"patch后通过的测试文件: {sorted(post_passed)}")
         
         # 保存测试日志
         self._save_test_logs(repo_name, pre_logs, post_logs)
 
         # 计算结果
-        pass_to_pass = pre_passed & post_passed
-        fail_to_pass = post_passed - pre_passed
+        fail_to_pass = pre_failed & post_passed
 
-        spec["PASS_TO_PASS"] = ", ".join(sorted(pass_to_pass)) if pass_to_pass else "None"
         spec["FAIL_TO_PASS"] = ", ".join(sorted(fail_to_pass)) if fail_to_pass else "None"
-        spec["post_passed"] = list(post_passed)
-        spec["pre_passed"] = list(pre_passed)
         spec["processed"] = True
 
         self.logger.info("=== 测试结果总结 ===")
-        self.logger.info(f"前后均通过的测试: {spec['PASS_TO_PASS']}")
         self.logger.info(f"仅patch后通过的测试: {spec['FAIL_TO_PASS']}")
+    
+    def _get_test_code(self, spec: Dict[str, Any], repo_name: str):
+        test_py = [
+            Path(self.base_path / "swap" / repo_name / f).read_text(encoding="utf-8", errors='replace')
+            for f in spec["test_files"] if f.endswith(".py")
+        ]
+        file_names = [f for f in spec["test_files"] if f.endswith(".py")]
+        return [{name: text} for name, text in zip(file_names, test_py)]
+    
+    def _get_test_func(self, code_before: List[Dict[str, Any]], code_after: List[Dict[str, Any]]) -> List[Dict[str, CodeChange]]:
+        analyzer = CodeChangeAnalyzer()
+        pytest_filter = PytestFilter()
+        result = []
+        for before, after in zip(code_before, code_after):
+            file_name = list(before.keys())[0]
+            before_code = before[file_name]
+            after_code = after[file_name]
+            changes = analyzer.analyze_changes(before_code, after_code)
+            pytest_changes = pytest_filter.filter_pytest_changes(changes)
+            result.append({file_name: pytest_changes})
+        return result
 
     def run(self):
         """主运行方法"""
