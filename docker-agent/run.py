@@ -259,6 +259,10 @@ class DockerAgentRunner:
         test_code_after = self._get_test_code(spec, repo_name)
 
         test_func = self._get_test_func(test_code_before, test_code_after)
+        if all(not changes for changes_dict in test_func for changes in changes_dict.values()):
+            self.logger.info(f"跳过 spec {spec['instance_id']} 的测试")
+            spec["processed"] = True
+            return
 
         pre_failed, pre_logs = operator.run_tests_in_container(test_func, repo_name, [TestStatus.FAILED, TestStatus.ERROR])
         self.logger.info(f"patch前未通过的测试文件: {sorted(pre_failed)}")

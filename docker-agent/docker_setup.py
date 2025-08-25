@@ -267,6 +267,8 @@ class ContainerOperator:
         for test_file in test_files:
             for file_name, changes in test_file.items():
                 for change in changes:
+                    if change.change_type == 'deleted':
+                        continue
                     if change.code_type == 'function':
                         pytest_args.append(f"{file_name}::{change.name}")
                     elif change.code_type == 'method':

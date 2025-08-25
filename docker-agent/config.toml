@@ -15,7 +15,7 @@ timeout = 180
 analysis_file = "/home/kndy666/Programming/Agent/data_collect/swebench-live/analysis_results.json"
 
 [execution]
-max_specs_per_repo = 3
+max_specs_per_repo = 10
 default_python_version = "3.9"
 
 [trae]

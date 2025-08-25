@@ -8,6 +8,7 @@ print(analyzer.format_results(changes))
 """
 
 import ast
+import textwrap
 from typing import Dict, List, Set, Optional
 from dataclasses import dataclass
 
@@ -226,133 +227,165 @@ class CodeChangeAnalyzer:
         
         return modified
     
-    def get_function_node_by_name(self, func_name: str, tree: ast.AST) -> Optional[ast.FunctionDef]:
-        """通过函数名获取AST节点"""
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
-                # 确保是顶级函数，不在类中
-                for parent in ast.walk(tree):
-                    if isinstance(parent, ast.ClassDef):
-                        if node in ast.walk(parent):
-                            continue
-                return node
-        return None
+    def extract_code_lines(self, code: str, start_line: int, end_line: int) -> str:
+        """安全地提取代码行，并处理缩进"""
+        lines = code.split('\n')
+        if start_line < 0 or end_line > len(lines):
+            return ""
+        
+        # 提取指定范围的行
+        extracted_lines = lines[start_line:end_line]
+        if not extracted_lines:
+            return ""
+        
+        # 使用 textwrap.dedent 去除公共缩进
+        extracted_code = '\n'.join(extracted_lines)
+        normalized_code = textwrap.dedent(extracted_code)
+        
+        return normalized_code
     
-    def get_class_node_by_name(self, class_name: str, tree: ast.AST) -> Optional[ast.ClassDef]:
-        """通过类名获取AST节点"""
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == class_name:
-                return node
-        return None
-    
-    def extract_function_code_by_ast(self, func_name: str, code: str) -> str:
-        """通过AST精确提取函数代码"""
+    def get_function_info(self, func_name: str, code: str, in_class: str = None) -> Optional[tuple]:
+        """获取函数的行号信息 (start_line, end_line)"""
         try:
             tree = ast.parse(code)
-            lines = code.split('\n')
             
-            func_node = self.get_function_node_by_name(func_name, tree)
-            if not func_node or not hasattr(func_node, 'end_lineno'):
-                return ""
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.name == func_name:
+                        # 如果指定了类名，确保函数在该类中
+                        if in_class:
+                            # 检查此函数是否在指定的类中
+                            for class_node in ast.walk(tree):
+                                if (isinstance(class_node, ast.ClassDef) and 
+                                    class_node.name == in_class and 
+                                    node in ast.walk(class_node)):
+                                    return (node.lineno - 1, node.end_lineno)
+                        else:
+                            # 确保是顶级函数（不在任何类中）
+                            in_any_class = False
+                            for class_node in ast.walk(tree):
+                                if (isinstance(class_node, ast.ClassDef) and 
+                                    node in ast.walk(class_node)):
+                                    in_any_class = True
+                                    break
+                            
+                            if not in_any_class:
+                                return (node.lineno - 1, node.end_lineno)
             
-            # 使用 Python 3.8+ 的 end_lineno 属性
-            start_line = func_node.lineno - 1
-            end_line = func_node.end_lineno
-            
-            return '\n'.join(lines[start_line:end_line])
+            return None
             
         except Exception as e:
-            print(f"提取函数 {func_name} 代码时出错: {e}")
-            return ""
+            print(f"获取函数 {func_name} 信息时出错: {e}")
+            return None
     
-    def extract_class_code_by_ast(self, class_name: str, code: str) -> str:
-        """通过AST精确提取类代码"""
+    def get_class_info(self, class_name: str, code: str) -> Optional[tuple]:
+        """获取类的行号信息 (start_line, end_line)"""
         try:
             tree = ast.parse(code)
-            lines = code.split('\n')
             
-            class_node = self.get_class_node_by_name(class_name, tree)
-            if not class_node or not hasattr(class_node, 'end_lineno'):
-                return ""
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and node.name == class_name:
+                    return (node.lineno - 1, node.end_lineno)
             
-            # 使用 Python 3.8+ 的 end_lineno 属性
-            start_line = class_node.lineno - 1
-            end_line = class_node.end_lineno
-            
-            return '\n'.join(lines[start_line:end_line])
+            return None
             
         except Exception as e:
-            print(f"提取类 {class_name} 代码时出错: {e}")
-            return ""
+            print(f"获取类 {class_name} 信息时出错: {e}")
+            return None
     
     def is_function_modified(self, func_name: str, code_before: str, code_after: str) -> bool:
         """检查函数是否被修改"""
-        func_before = self.extract_function_code_by_ast(func_name, code_before)
-        func_after = self.extract_function_code_by_ast(func_name, code_after)
-        
-        if not func_before or not func_after:
+        try:
+            info_before = self.get_function_info(func_name, code_before)
+            info_after = self.get_function_info(func_name, code_after)
+            
+            if not info_before or not info_after:
+                return False
+            
+            func_before = self.extract_code_lines(code_before, info_before[0], info_before[1])
+            func_after = self.extract_code_lines(code_after, info_after[0], info_after[1])
+            
+            if not func_before or not func_after:
+                return False
+            
+            # 标准化代码以便比较
+            func_before_normalized = self.normalize_code(func_before)
+            func_after_normalized = self.normalize_code(func_after)
+            
+            is_modified = func_before_normalized != func_after_normalized
+            
+            if is_modified:
+                print(f"函数 {func_name} 被修改")
+            
+            return is_modified
+            
+        except Exception as e:
+            print(f"检查函数 {func_name} 修改状态时出错: {e}")
             return False
-        
-        # 标准化代码以便比较（去除空行和缩进差异）
-        func_before_normalized = self.normalize_code(func_before)
-        func_after_normalized = self.normalize_code(func_after)
-        
-        is_modified = func_before_normalized != func_after_normalized
-        
-        if is_modified:
-            print(f"函数 {func_name} 被修改")
-            print(f"修改前长度: {len(func_before)} 字符")
-            print(f"修改后长度: {len(func_after)} 字符")
-        
-        return is_modified
     
     def is_class_modified(self, class_name: str, code_before: str, code_after: str) -> bool:
         """检查类是否被修改"""
-        class_before = self.extract_class_code_by_ast(class_name, code_before)
-        class_after = self.extract_class_code_by_ast(class_name, code_after)
-        
-        if not class_before or not class_after:
+        try:
+            info_before = self.get_class_info(class_name, code_before)
+            info_after = self.get_class_info(class_name, code_after)
+            
+            if not info_before or not info_after:
+                return False
+            
+            class_before = self.extract_code_lines(code_before, info_before[0], info_before[1])
+            class_after = self.extract_code_lines(code_after, info_after[0], info_after[1])
+            
+            if not class_before or not class_after:
+                return False
+            
+            class_before_normalized = self.normalize_code(class_before)
+            class_after_normalized = self.normalize_code(class_after)
+            
+            is_modified = class_before_normalized != class_after_normalized
+            
+            if is_modified:
+                print(f"类 {class_name} 被修改")
+            
+            return is_modified
+            
+        except Exception as e:
+            print(f"检查类 {class_name} 修改状态时出错: {e}")
             return False
-        
-        class_before_normalized = self.normalize_code(class_before)
-        class_after_normalized = self.normalize_code(class_after)
-        
-        is_modified = class_before_normalized != class_after_normalized
-        
-        if is_modified:
-            print(f"类 {class_name} 被修改")
-        
-        return is_modified
     
     def is_method_modified(self, method_name: str, code_before: str, code_after: str) -> bool:
         """检查方法是否被修改"""
         if '.' not in method_name:
             return False
         
-        class_name, method = method_name.split('.', 1)
-        
-        class_before = self.extract_class_code_by_ast(class_name, code_before)
-        class_after = self.extract_class_code_by_ast(class_name, code_after)
-        
-        if not class_before or not class_after:
+        try:
+            class_name, method = method_name.split('.', 1)
+            
+            # 获取方法在类中的信息
+            info_before = self.get_function_info(method, code_before, in_class=class_name)
+            info_after = self.get_function_info(method, code_after, in_class=class_name)
+            
+            if not info_before or not info_after:
+                return False
+            
+            method_before = self.extract_code_lines(code_before, info_before[0], info_before[1])
+            method_after = self.extract_code_lines(code_after, info_after[0], info_after[1])
+            
+            if not method_before or not method_after:
+                return False
+            
+            method_before_normalized = self.normalize_code(method_before)
+            method_after_normalized = self.normalize_code(method_after)
+            
+            is_modified = method_before_normalized != method_after_normalized
+            
+            if is_modified:
+                print(f"方法 {method_name} 被修改")
+            
+            return is_modified
+            
+        except Exception as e:
+            print(f"检查方法 {method_name} 修改状态时出错: {e}")
             return False
-        
-        # 在类代码中查找方法
-        method_before = self.extract_function_code_by_ast(method, class_before)
-        method_after = self.extract_function_code_by_ast(method, class_after)
-        
-        if not method_before or not method_after:
-            return False
-        
-        method_before_normalized = self.normalize_code(method_before)
-        method_after_normalized = self.normalize_code(method_after)
-        
-        is_modified = method_before_normalized != method_after_normalized
-        
-        if is_modified:
-            print(f"方法 {method_name} 被修改")
-        
-        return is_modified
     
     def normalize_code(self, code: str) -> str:
         """标准化代码以便比较"""
