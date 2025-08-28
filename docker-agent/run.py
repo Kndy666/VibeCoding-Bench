@@ -278,17 +278,21 @@ class DockerAgentRunner:
         # 计算结果
         fail_to_pass = pre_failed & post_passed
 
-        spec["FAIL_TO_PASS"] = ", ".join(sorted(fail_to_pass)) if fail_to_pass else "None"
+        spec["FAIL_TO_PASS"] = ", ".join(sorted(fail_to_pass)) if fail_to_pass else None
         spec["processed"] = True
 
         self.logger.info("=== 测试结果总结 ===")
         self.logger.info(f"仅patch后通过的测试: {spec['FAIL_TO_PASS']}")
     
     def _get_test_code(self, spec: Dict[str, Any], repo_name: str):
-        test_py = [
-            Path(self.base_path / "swap" / repo_name / f).read_text(encoding="utf-8", errors='replace')
-            for f in spec["test_files"] if f.endswith(".py")
-        ]
+        test_py = []
+        for f in spec["test_files"]:
+            if f.endswith(".py"):
+                try:
+                    test_py.append(Path(self.base_path / "swap" / repo_name / f).read_text(encoding="utf-8", errors='replace'))
+                except FileNotFoundError:
+                    test_py.append("")
+
         file_names = [f for f in spec["test_files"] if f.endswith(".py")]
         return [{name: text} for name, text in zip(file_names, test_py)]
     
@@ -314,6 +318,9 @@ class DockerAgentRunner:
                 if not self.test_only:
                     if spec.get("processed", False):
                         self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
+                        continue
+                else:
+                    if spec.get("FAIL_TO_PASS", None) != "None" and spec.get("FAIL_TO_PASS", None) is not None:
                         continue
 
                 container = None

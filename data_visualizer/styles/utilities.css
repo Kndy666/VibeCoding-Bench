@@ -1,0 +1,10 @@
+.loading {
+    display: none;
+    text-align: center;
+    padding: 20px;
+    color: #666;
+}
+
+.loading.show {
+    display: block;
+}

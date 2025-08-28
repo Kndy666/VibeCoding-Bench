@@ -1,0 +1,49 @@
+.markdown-content {
+    font-family: inherit;
+    line-height: 1.8;
+    color: #444;
+    margin-bottom: 20px;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+    color: #2c3e50;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    line-height: 1.2;
+}
+
+.markdown-content p {
+    margin-bottom: 1em;
+}
+
+.markdown-content pre {
+    background: #f4f4f4;
+    border: 1px solid #ddd;
+    border-left: 3px solid #667eea;
+    color: #666;
+    page-break-inside: avoid;
+    font-family: monospace;
+    font-size: 15px;
+    line-height: 1.6;
+    margin-bottom: 1.6em;
+    max-width: 100%;
+    overflow: auto;
+    padding: 1em 1.5em;
+    display: block;
+    word-wrap: break-word;
+}
+
+/* Fix Markdown list overflow issues */
+.markdown-content ul, 
+.markdown-content ol {
+    padding-left: 1.5em; /* Increase left padding to accommodate bullets */
+    margin-top: 1em;
+    margin-bottom: 1em;
+}
+
+.markdown-content li {
+    margin-bottom: 0.5em;
+}

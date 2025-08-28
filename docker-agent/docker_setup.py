@@ -1,9 +1,9 @@
 import docker
-import re
+import os
 import base64
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Any
 import docker.models.containers
 from command_executor import LocalCommandExecutor, DockerCommandExecutor, docker_environment
 from docker_image_builder import DockerImageBuilder
@@ -21,6 +21,38 @@ class CacheManager:
         self.repo_lower = self.repo.lower()
         self.image_builder = DockerImageBuilder(timeout)
         self.base_path = Path(__file__).parent
+
+    @property
+    def common_container_config(self) -> Dict[str, Any]:
+        """提取并返回通用的容器创建参数"""
+        
+        config = {
+            "name": self.repo,
+            "command": "/bin/bash",
+            "detach": True,
+            "tty": True,
+            "runtime": "nvidia",
+            "network_mode": "host",
+            "device_requests": [{
+                'count': -1,
+                'capabilities': [['gpu']]
+            }],
+            "environment": docker_environment,
+            "volumes": {
+                str(self.base_path / "swap"): {
+                    "bind": "/workdir/swap",
+                    "mode": "rw"
+                }
+            }
+        }
+
+        if os.name == 'posix':
+            uid = os.getuid()
+            gid = os.getgid()
+            self.logger.info(f"在 POSIX 系统上运行，设置容器用户为 UID={uid}, GID={gid}")
+            config['user'] = f"{uid}:{gid}"
+            
+        return config
     
     def check_cached_container(self) -> Optional[docker.models.containers.Container]:
         """检查是否存在缓存的容器"""
@@ -93,23 +125,7 @@ class CacheManager:
         
         container = self.client.containers.run(
             image=image_name,
-            name=self.repo,
-            command="/bin/bash",
-            detach=True,
-            tty=True,
-            runtime="nvidia",
-            network_mode="host",
-            device_requests=[{
-                'count': -1,
-                'capabilities': [['gpu']]
-            }],
-            environment=docker_environment,
-            volumes={
-                self.base_path / "swap": {
-                    "bind": "/workdir/swap",
-                    "mode": "rw"
-                }
-            }
+            **self.common_container_config
         )
         
         self.logger.info(f"从缓存镜像成功创建容器: {self.repo}")
@@ -125,23 +141,7 @@ class CacheManager:
         # 创建带有GPU支持的容器
         container = self.client.containers.run(
             image=image_name,
-            name=self.repo,
-            command="/bin/bash",
-            detach=True,
-            tty=True,
-            runtime="nvidia",
-            network_mode="host",
-            device_requests=[{
-                'count': -1,
-                'capabilities': [['gpu']]
-            }],
-            environment=docker_environment,
-            volumes={
-                self.base_path / "swap": {
-                    "bind": "/workdir/swap",
-                    "mode": "rw"
-                }
-            }
+            **self.common_container_config
         )
 
         self.logger.info(f"容器 {self.repo} 创建成功（带GPU支持）")
@@ -221,18 +221,39 @@ class ContainerOperator:
         for change in file_changes:
             filename = change.get("filename")
             patch_content = change.get("patch", "")
+            status = change.get("status", "")
             
-            if not filename or not patch_content:
+            if not filename or not patch_content or not status:
                 continue
             
             # 构建完整的diff格式内容
-            diff_content = (
-                f"diff --git a/{filename} b/{filename}\n"
-                f"--- a/{filename}\n"
-                f"+++ b/{filename}\n"
-                f"{patch_content}\n"
-            )
-            
+            header = f"diff --git a/{filename} b/{filename}\n"
+            if status == "added":
+                diff_content = (
+                    f"{header}"
+                    f"new file mode 100644\n"
+                    f"--- /dev/null\n"
+                    f"+++ b/{filename}\n"
+                    f"{patch_content}\n"
+                )
+            elif status == "modified":
+                diff_content = (
+                    f"{header}"
+                    f"--- a/{filename}\n"
+                    f"+++ b/{filename}\n"
+                    f"{patch_content}\n"
+                )
+            elif status == "removed":
+                diff_content = (
+                    f"{header}"
+                    f"deleted file mode 100644\n"
+                    f"--- a/{filename}\n"
+                    f"+++ /dev/null\n"
+                    f"{patch_content}\n"
+                )
+            elif status == "renamed":
+                continue
+
             # 将patch内容编码为base64并写入临时文件
             patch_base64 = base64.b64encode(diff_content.encode('utf-8')).decode('utf-8')
             write_cmd = f"echo '{patch_base64}' | base64 -d > /tmp/patch.tmp"
@@ -275,7 +296,7 @@ class ContainerOperator:
                         class_name, method_name = change.name.split('.', 1)
                         pytest_args.append(f"{file_name}::{class_name}::{method_name}")
         
-        cmd = f"python3 -m pytest -q -rA --tb=no {' '.join(pytest_args)}"
+        cmd = f"python3 -m pytest -q -rA --tb=no -p no:pretty {' '.join(pytest_args)}"
         
         exit_code, output = self.docker_executor.execute(cmd, f"/workdir/swap/{repo_name}", stream=True, tty=True, timeout=300)
         matched_files = self.parse_pytest_output(output, pytest_args, expected_statuses)

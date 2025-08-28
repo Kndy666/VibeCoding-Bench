@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PR Data Visualization Analysis Tool</title>
+    <!-- Introduce Google Fonts Fira Code -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <!-- Introduce marked.js for rendering Markdown -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.0.0/marked.min.js"></script>
+    <!-- Introduce highlight.js for syntax highlighting (switch to light theme) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/diff.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+    <!-- Split CSS files by functionality -->
+    <link rel="stylesheet" href="styles/base.css">
+    <link rel="stylesheet" href="styles/header.css">
+    <link rel="stylesheet" href="styles/upload.css">
+    <link rel="stylesheet" href="styles/stats.css">
+    <link rel="stylesheet" href="styles/charts.css">
+    <link rel="stylesheet" href="styles/details.css">
+    <link rel="stylesheet" href="styles/filters.css">
+    <link rel="stylesheet" href="styles/pr-list.css">
+    <link rel="stylesheet" href="styles/modal.css">
+    <link rel="stylesheet" href="styles/markdown.css">
+    <link rel="stylesheet" href="styles/responsive.css">
+    <link rel="stylesheet" href="styles/utilities.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>PR Data Visualization Analysis Tool</h1>
+            <p>Upload your PR data files for in-depth analysis and visualization</p>
+        </div>
+        
+        <div class="upload-section">
+            <div class="file-input-wrapper">
+                <input type="file" id="fileInput" class="file-input" accept=".json" multiple>
+                Select JSON files to upload
+            </div>
+            <p style="margin-top: 10px; color: #666;">Supports uploading JSON files containing PR data</p>
+        </div>
+        
+        <div class="loading" id="loading">
+            <p>Analyzing data, please wait...</p>
+        </div>
+        
+        <div id="analysisResults" style="display: none;">
+            <div class="stats-grid">
+                <!-- Updated stat cards -->
+                <div class="stat-card">
+                    <div class="stat-number" id="totalPRs">0</div>
+                    <div class="stat-label">Total PRs</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="failToPassPRs">0</div>
+                    <div class="stat-label">Fail to Pass PRs</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="totalRepos">0</div>
+                    <div class="stat-label">Total Repositories</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="failToPassRepos">0</div>
+                    <div class="stat-label">Fail to Pass Repositories</div>
+                </div>
+            </div>
+            
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-title">File Modification Distribution</div>
+                    <canvas id="fileDistChart"></canvas>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">Code Change Distribution</div>
+                    <canvas id="changesChart"></canvas>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">Repository Distribution</div>
+                    <canvas id="repoChart"></canvas>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-title">Monthly PR Trends</div>
+                    <canvas id="timelineChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="details-section">
+                <div class="details-header">
+                    <h3>PR Details List</h3>
+                    <span id="pr-count">Total 0 items</span>
+                </div>
+                <div class="filter-container">
+                    <div class="filter-group">
+                        <label for="prFilter">PR Title Keywords:</label>
+                        <input type="text" id="prFilter" placeholder="Enter keywords...">
+                    </div>
+                    <div class="filter-group">
+                        <label>Repository Name:</label>
+                        <div class="multiselect" id="repoFilterContainer">
+                            <div class="select-box" onclick="toggleRepoDropdown()">
+                                <span class="selected-options" id="selectedRepos"></span>
+                                <span class="placeholder" id="repoPlaceholder">Select repositories...</span>
+                            </div>
+                            <div id="repoDropdown" class="dropdown-list">
+                                <!-- Checkboxes will be populated here -->
+                            </div>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <label for="startDate">Start Date:</label>
+                        <input type="date" id="startDate">
+                    </div>
+                    <div class="filter-group">
+                        <label for="endDate">End Date:</label>
+                        <input type="date" id="endDate">
+                    </div>
+                    <!-- Updated Checkbox to a Toggle Switch -->
+                    <div class="filter-group filter-group-toggle">
+                        <label class="switch">
+                            <input type="checkbox" id="failToPassFilter">
+                            <span class="slider"></span>
+                            <span class="switch-label">Show only Fail to Pass tests</span>
+                        </label>
+                    </div>
+                </div>
+                <div id="prList"></div>
+            </div>
+        </div>
+        
+        <!-- PR Details Modal -->
+        <div id="prModal" class="pr-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div class="modal-title-container">
+                        <h3 class="modal-title" id="modalTitle">PR Details</h3>
+                        <span class="font-controls">
+                            <button onclick="decreaseFontSize()">-</button>
+                            <button onclick="increaseFontSize()">+</button>
+                        </span>
+                    </div>
+                    <button class="close" onclick="closePRModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="modalBody">
+                    <!-- Detailed content will be loaded here dynamically -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="scripts/dataLoader.js"></script>
+    <script src="scripts/dataAnalyzer.js"></script>
+    <script src="scripts/filters.js"></script>
+    <script src="scripts/prList.js"></script>
+    <script src="scripts/modal.js"></script>
+    <script src="scripts/utils.js"></script>
+    <script src="scripts/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+.details-section {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border-radius: 15px;
+    padding: 25px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+    margin-bottom: 30px;
+}
+
+.details-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.details-header h3 {
+    margin: 0;
+}
+
+#pr-count {
+    font-size: 0.9em;
+    color: #666;
+    background: #f0f0f0;
+    padding: 5px 10px;
+    border-radius: 12px;
+}
