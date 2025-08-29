@@ -74,7 +74,8 @@ You can tolerate a few test cases failures—as long as most tests pass, it's go
 Your test command must output detailed pass/fail status for each test item. This is mandatory. For example, with pytest, use the -rA option to get output like:
 PASSED tests/test_resources.py::test_fetch_centromeres
 PASSED tests/test_vis.py::test_to_ucsc_colorstring
-Always use --tb=short to avoid excessive traceback output.
+
+**IMPORTANT:** Always use '--tb=short' to avoid excessive traceback output. Before running any tests, you MUST attempt to install 'pytest-timeout', and ALWAYS add '--timeout=15' to your pytest command to prevent any single test case from running too long.
 
 **IMPORTANT:** You must additionally test {test_files}. If these specific tests fail due to ImportError or ModuleNotFound, you should make every effort to install all optional dependencies. For other test files, you may tolerate ImportError or ModuleNotFound errors.
 

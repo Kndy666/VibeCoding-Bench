@@ -263,26 +263,33 @@ class DockerAgentRunner:
             self.logger.info(f"跳过 spec {spec['instance_id']} 的测试")
             spec["processed"] = True
             return
-
-        pre_failed, pre_logs = operator.run_tests_in_container(test_func, repo_name, [TestStatus.FAILED, TestStatus.ERROR])
-        self.logger.info(f"patch前未通过的测试文件: {sorted(pre_failed)}")
+        
+        p2p_pre_passed, p2p_pre_logs = operator.run_tests_in_container(repo_name, expected_statuses=[TestStatus.PASSED])
+        f2p_failed, f2p_pre_logs = operator.run_tests_in_container(repo_name, test_func, [TestStatus.FAILED, TestStatus.ERROR])
+        self.logger.info(f"patch前未通过的测试文件: {sorted(f2p_failed)}")
+        self.logger.info(f"patch前通过的测试文件: {sorted(p2p_pre_passed)[:5]}")
 
         # 应用主补丁并运行测试
         operator.apply_patches(spec.get("patch", []), repo_name)
-        post_passed, post_logs = operator.run_tests_in_container(test_func, repo_name, [TestStatus.PASSED])
-        self.logger.info(f"patch后通过的测试文件: {sorted(post_passed)}")
+        f2p_passed, f2p_post_logs = operator.run_tests_in_container(repo_name, test_func, [TestStatus.PASSED])
+        p2p_post_passed, p2p_post_logs = operator.run_tests_in_container(repo_name, expected_statuses=[TestStatus.PASSED])
+        self.logger.info(f"patch后通过的测试文件: {sorted(f2p_passed)}")
+        self.logger.info(f"patch后仍通过的测试文件: {sorted(p2p_post_passed)[:5]}")
         
         # 保存测试日志
-        self._save_test_logs(repo_name, pre_logs, post_logs)
+        self._save_test_logs(repo_name, p2p_pre_logs, p2p_post_logs)
 
         # 计算结果
-        fail_to_pass = pre_failed & post_passed
+        fail_to_pass = f2p_failed & f2p_passed
+        pass_to_pass = p2p_pre_passed & p2p_post_passed
 
         spec["FAIL_TO_PASS"] = ", ".join(sorted(fail_to_pass)) if fail_to_pass else None
+        spec["PASS_TO_PASS"] = ", ".join(sorted(pass_to_pass)) if pass_to_pass else None
         spec["processed"] = True
 
         self.logger.info("=== 测试结果总结 ===")
         self.logger.info(f"仅patch后通过的测试: {spec['FAIL_TO_PASS']}")
+        self.logger.info(f"补丁前后均通过的测试: {spec['PASS_TO_PASS']}")
     
     def _get_test_code(self, spec: Dict[str, Any], repo_name: str):
         test_py = []
@@ -320,7 +327,7 @@ class DockerAgentRunner:
                         self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
                         continue
                 else:
-                    if spec.get("FAIL_TO_PASS", None) != "None" and spec.get("FAIL_TO_PASS", None) is not None:
+                    if spec.get("PASS_TO_PASS", None) is not None:
                         continue
 
                 container = None
@@ -336,12 +343,12 @@ class DockerAgentRunner:
                             # 保存镜像
                             try:
                                 self.docker_manager.cache_manager.save_container_as_image(container)
-                                self.logger.info(f"已为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 保存配置后的镜像")
+                                self.logger.info(f"已为仓库 {repo.lower()}#{spec['instance_id'].split('-')[-1]} 保存配置后的镜像")
                             except Exception as save_err:
-                                self.logger.error(f"保存仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 镜像失败: {str(save_err)}")
+                                self.logger.error(f"保存仓库 {repo.lower()}#{spec['instance_id'].split('-')[-1]} 镜像失败: {str(save_err)}")
 
                         except Exception as setup_err:
-                            self.logger.error(f"为仓库 {repo.lower()}#{spec["instance_id"].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
+                            self.logger.error(f"为仓库 {repo.lower()}#{spec['instance_id'].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
                             continue
                     else:
                         container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])

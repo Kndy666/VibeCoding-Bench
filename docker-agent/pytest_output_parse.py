@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 from enum import Enum
 from collections import defaultdict
 
@@ -224,6 +224,34 @@ class PytestResultParser:
     def get_all_results(self) -> Dict[str, TestStatus]:
         """获取所有解析的测试结果"""
         return self.test_results.copy()
+    
+    def filter_tests_by_status(self, expected_statuses: Optional[List[TestStatus]] = None) -> Set[str]:
+        """
+        根据期望状态筛选符合期望状态的测试项（已聚合参数化结果）。
+
+        Args:
+            expected_statuses: 期望的状态列表（例如 [TestStatus.PASSED]）
+
+        Returns:
+            匹配到且聚合后状态在 expected_statuses 中的基础测试路径集合
+        """
+        if expected_statuses is None or not expected_statuses:
+            expected_statuses = [TestStatus.PASSED]
+
+        matched: Set[str] = set()
+        # 按基础测试名称分组
+        base_test_groups = defaultdict(dict)
+        for test_path, status in self.test_results.items():
+            base_name = self._get_base_test_name(test_path)
+            base_test_groups[base_name][test_path] = status
+
+        # 聚合并筛选
+        for base_name, group_results in base_test_groups.items():
+            aggregated = self._aggregate_parametrized_results(group_results)
+            if aggregated in expected_statuses:
+                matched.add(base_name)
+
+        return matched
     
     def get_summary(self) -> Dict[TestStatus, int]:
         """

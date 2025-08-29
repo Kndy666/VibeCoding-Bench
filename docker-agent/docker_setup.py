@@ -46,11 +46,11 @@ class CacheManager:
             }
         }
 
-        if os.name == 'posix':
-            uid = os.getuid()
-            gid = os.getgid()
-            self.logger.info(f"在 POSIX 系统上运行，设置容器用户为 UID={uid}, GID={gid}")
-            config['user'] = f"{uid}:{gid}"
+        # if os.name == 'posix':
+        #     uid = os.getuid()
+        #     gid = os.getgid()
+        #     self.logger.info(f"在 POSIX 系统上运行，设置容器用户为 UID={uid}, GID={gid}")
+        #     config['user'] = f"{uid}:{gid}"
             
         return config
     
@@ -282,21 +282,56 @@ class ContainerOperator:
             self.logger.info(f"成功应用patch到: {filename}")
         
         return modified_files
-    def run_tests_in_container(self, test_files: List[Dict[str, CodeChange]], repo_name: str, expected_statuses: Optional[List[TestStatus]] = None) -> tuple[Set[str], str]:
+
+    def _find_test_dirs(self, repo_name: str, use_docker: bool = True) -> List[str]:
+        """递归检测仓库中的测试目录（容器内或本地），返回存在的目录列表（若未检测到返回 ['tests']）"""
+        candidates = ["tests", "test", "Tests", "TESTS", "unit_tests", "TEST"]
+        
+        # 使用find命令递归查找所有匹配的目录
+        find_cmd = f"find . -type d \\( " + " -o ".join([f"-name '{d}'" for d in candidates]) + " \\) -print"
+        
+        if use_docker:
+            workdir = f"/workdir/swap/{repo_name}"
+            exit_code, output = self.docker_executor.execute(find_cmd, workdir, tty=False, timeout=30)
+        else:
+            workdir = str(self.base_path / "swap" / repo_name)
+            exit_code, output = self.local_executor.execute(find_cmd, workdir, tty=False, timeout=30)
+
+        if output is None:
+            output = ""
+        
+        # 清理路径，移除开头的./
+        found = [line.strip().lstrip('./') for line in output.splitlines() if line.strip()]
+
+        if not found:
+            self.logger.info(f"未检测到常见测试目录（{candidates}），回退到默认 'tests'")
+            return ["tests"]
+
+        self.logger.info(f"检测到测试目录: {found}")
+        return found
+
+    def run_tests_in_container(self, repo_name: str, test_files: Optional[List[Dict[str, CodeChange]]] = None, expected_statuses: Optional[List[TestStatus]] = None) -> tuple[Set[str], str]:
         """在容器中运行测试并返回通过的测试文件和日志"""
         pytest_args = []
-        for test_file in test_files:
-            for file_name, changes in test_file.items():
-                for change in changes:
-                    if change.change_type == 'deleted':
-                        continue
-                    if change.code_type == 'function':
-                        pytest_args.append(f"{file_name}::{change.name}")
-                    elif change.code_type == 'method':
-                        class_name, method_name = change.name.split('.', 1)
-                        pytest_args.append(f"{file_name}::{class_name}::{method_name}")
+
+        if test_files is None:
+            self.docker_executor.execute("pip install pytest-timeout", stream=True, tty=True)
+            dirs = self._find_test_dirs(repo_name, use_docker=True)
+            for d in dirs:
+                pytest_args.append(f"{d}/")
+        else:
+            for test_file in test_files:
+                for file_name, changes in test_file.items():
+                    for change in changes:
+                        if change.change_type == 'deleted':
+                            continue
+                        elif change.code_type == 'function':
+                            pytest_args.append(f"{file_name}::{change.name}")
+                        elif change.code_type == 'method':
+                            class_name, method_name = change.name.split('.', 1)
+                            pytest_args.append(f"{file_name}::{class_name}::{method_name}")
         
-        cmd = f"python3 -m pytest -q -rA --tb=no -p no:pretty {' '.join(pytest_args)}"
+        cmd = f"python3 -m pytest -q -rA --tb=no -p no:pretty --timeout=15 {' '.join(pytest_args)}"
         
         exit_code, output = self.docker_executor.execute(cmd, f"/workdir/swap/{repo_name}", stream=True, tty=True, timeout=300)
         matched_files = self.parse_pytest_output(output, pytest_args, expected_statuses)
@@ -306,11 +341,22 @@ class ContainerOperator:
         """解析pytest输出，提取完全通过测试的文件（无失败和错误）"""
         
         parser = PytestResultParser(logs)
-        results = parser.query_tests(test_cases)
-        self.logger.info("查询结果:")
-        for test, status in results.items():
-            self.logger.info(f"  {test}: {status.value}")
-        return set(test for test, status in results.items() if status in expected_statuses)
+        
+        # 检查test_cases是否为目录形式
+        is_directory_test = any(arg.endswith('/') for arg in test_cases)
+        
+        if is_directory_test:
+            # 使用 parser 提供的筛选函数获取所有符合期望状态的测试项
+            matched = parser.filter_tests_by_status(expected_statuses)
+            self.logger.info(f"目录测试匹配到 {len(matched)} 个符合期望状态的测试")
+            return matched
+        else:
+            # 原有的处理逻辑
+            results = parser.query_tests(test_cases)
+            self.logger.info("查询结果:")
+            for test, status in results.items():
+                self.logger.info(f"  {test}: {status.value}")
+            return set(test for test, status in results.items() if status in expected_statuses)
 
 class DockerEnvironmentManager:
     """Docker环境管理器"""
