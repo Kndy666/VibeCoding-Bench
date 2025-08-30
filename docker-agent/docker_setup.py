@@ -159,6 +159,9 @@ class ContainerOperator:
         self.repo = repo
         self.repo_name = repo.split("/")[-1]
 
+        if self.container:
+            self.docker_executor.execute(f"git config --global --add safe.directory /workdir/swap/{self.repo_name}")
+
     def repo_clone(self, use_docker=True):
         """克隆仓库"""
         # 检查目录是否已存在
@@ -286,9 +289,17 @@ class ContainerOperator:
     def _find_test_dirs(self, repo_name: str, use_docker: bool = True) -> List[str]:
         """递归检测仓库中的测试目录（容器内或本地），返回存在的目录列表（若未检测到返回 ['tests']）"""
         candidates = ["tests", "test", "Tests", "TESTS", "unit_tests", "TEST"]
-        
-        # 使用find命令递归查找所有匹配的目录
-        find_cmd = f"find . -type d \\( " + " -o ".join([f"-name '{d}'" for d in candidates]) + " \\) -print"
+        ignore_dirs = [".venv"]
+
+        prune_expr = " -o ".join([f"-path './{d}' -prune" for d in ignore_dirs])
+        prune_expr = f"\\( {prune_expr} \\) -o "
+
+        # 完整find命令
+        find_cmd = (
+            f"find . {prune_expr}-type d \\( " +
+            " -o ".join([f"-name '{d}'" for d in candidates]) +
+            " \\) -print"
+        )
         
         if use_docker:
             workdir = f"/workdir/swap/{repo_name}"
@@ -315,7 +326,6 @@ class ContainerOperator:
         pytest_args = []
 
         if test_files is None:
-            self.docker_executor.execute("pip install pytest-timeout", stream=True, tty=True)
             dirs = self._find_test_dirs(repo_name, use_docker=True)
             for d in dirs:
                 pytest_args.append(f"{d}/")
@@ -331,7 +341,7 @@ class ContainerOperator:
                             class_name, method_name = change.name.split('.', 1)
                             pytest_args.append(f"{file_name}::{class_name}::{method_name}")
         
-        cmd = f"python3 -m pytest -q -rA --tb=no -p no:pretty --timeout=15 {' '.join(pytest_args)}"
+        cmd = f"python3 -m pytest -q -rA --tb=no -p no:pretty --timeout=15 --continue-on-collection-errors {' '.join(pytest_args)}"
         
         exit_code, output = self.docker_executor.execute(cmd, f"/workdir/swap/{repo_name}", stream=True, tty=True, timeout=300)
         matched_files = self.parse_pytest_output(output, pytest_args, expected_statuses)

@@ -5,7 +5,7 @@ import sys
 import shutil
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from agent_config import AgentConfig
 from agent_executor import AgentExecutor, AgentTaskType
@@ -247,35 +247,61 @@ class DockerAgentRunner:
         except Exception as e:
             self.logger.error(f"保存测试日志失败: {e}")
 
+    def _reset_and_apply(self, operator: ContainerOperator, repo_name: str, base_commit: str, patches: List[str]):
+        operator.checkout_commit(base_commit, use_docker=True)
+        for p in patches or []:
+            if p:
+                operator.apply_patches(p, repo_name)
+
+    def _run_tests(self, operator: ContainerOperator, repo_name: str, test_filter = Optional[List[Dict[str, CodeChange]]], expected_statuses: List[TestStatus] = [TestStatus.PASSED]):
+        if test_filter is None:
+            passed, logs = operator.run_tests_in_container(repo_name, expected_statuses=expected_statuses)
+        else:
+            passed, logs = operator.run_tests_in_container(repo_name, test_filter, expected_statuses)
+        return set(passed), logs
+
     def _process_spec(self, container, spec: Dict[str, Any], repo_name: str):
-        """处理单个spec"""
+        """处理单个spec（已解耦，使用 helper）"""
 
         operator = ContainerOperator(repo_name, container)
-        operator.checkout_commit(spec["base_commit"], use_docker=False)
 
-        # 应用测试补丁并运行测试
+        # 获取测试前代码
+        self._reset_and_apply(operator, repo_name, spec["base_commit"], [])
         test_code_before = self._get_test_code(spec, repo_name)
-        operator.apply_patches(spec["test_patch"], repo_name)
+
+        # 应用测试补丁并获取测试后代码
+        self._reset_and_apply(operator, repo_name, spec["base_commit"], [spec.get("test_patch")])
         test_code_after = self._get_test_code(spec, repo_name)
 
+        # 计算变更的测试函数
         test_func = self._get_test_func(test_code_before, test_code_after)
         if all(not changes for changes_dict in test_func for changes in changes_dict.values()):
             self.logger.info(f"跳过 spec {spec['instance_id']} 的测试")
             spec["processed"] = True
             return
-        
-        p2p_pre_passed, p2p_pre_logs = operator.run_tests_in_container(repo_name, expected_statuses=[TestStatus.PASSED])
-        f2p_failed, f2p_pre_logs = operator.run_tests_in_container(repo_name, test_func, [TestStatus.FAILED, TestStatus.ERROR])
+
+        # p2p: patch 前后通过的测试（先在只应用 test_patch 的情况下运行）
+        self._reset_and_apply(operator, repo_name, spec["base_commit"], [spec.get("test_patch")])
+        p2p_pre_passed, p2p_pre_logs = self._run_tests(operator, repo_name, None, [TestStatus.PASSED])
+
+        # p2p: 应用 patch 后再次运行（只关心通过的集合）
+        self._reset_and_apply(operator, repo_name, spec["base_commit"], [spec.get("test_patch"), spec.get("patch")])
+        p2p_post_passed, p2p_post_logs = self._run_tests(operator, repo_name, None, [TestStatus.PASSED])
+
+        # f2p: patch 前（只应用 test_patch）针对选中的测试函数，期望失败或 error
+        self._reset_and_apply(operator, repo_name, spec["base_commit"], [spec.get("test_patch")])
+        f2p_failed, f2p_pre_logs = self._run_tests(operator, repo_name, test_func, [TestStatus.FAILED, TestStatus.ERROR])
+
+        # f2p: 应用 patch 后针对选中的测试函数，期望通过
+        self._reset_and_apply(operator, repo_name, spec["base_commit"], [spec.get("test_patch"), spec.get("patch")])
+        f2p_passed, f2p_post_logs = self._run_tests(operator, repo_name, test_func, [TestStatus.PASSED])
+
+        # 日志记录
         self.logger.info(f"patch前未通过的测试文件: {sorted(f2p_failed)}")
         self.logger.info(f"patch前通过的测试文件: {sorted(p2p_pre_passed)[:5]}")
-
-        # 应用主补丁并运行测试
-        operator.apply_patches(spec.get("patch", []), repo_name)
-        f2p_passed, f2p_post_logs = operator.run_tests_in_container(repo_name, test_func, [TestStatus.PASSED])
-        p2p_post_passed, p2p_post_logs = operator.run_tests_in_container(repo_name, expected_statuses=[TestStatus.PASSED])
         self.logger.info(f"patch后通过的测试文件: {sorted(f2p_passed)}")
         self.logger.info(f"patch后仍通过的测试文件: {sorted(p2p_post_passed)[:5]}")
-        
+
         # 保存测试日志
         self._save_test_logs(repo_name, p2p_pre_logs, p2p_post_logs)
 
@@ -327,6 +353,8 @@ class DockerAgentRunner:
                         self.logger.info(f"跳过已处理的 spec: {spec['instance_id']}")
                         continue
                 else:
+                    if spec.get("FAIL_TO_PASS", None) is None:
+                        continue
                     if spec.get("PASS_TO_PASS", None) is not None:
                         continue
 

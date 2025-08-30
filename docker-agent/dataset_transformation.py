@@ -74,11 +74,15 @@ def main(input_path: str, output_path: str):
         processed = process_entry(entry)
         all_processed.extend(processed)
     
+    # 按 instance_id 去重，保留最后一条
+    dedup_map = {item["instance_id"]: item for item in all_processed}
+    deduped = list(dedup_map.values())
+    
     # 写入处理结果
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(all_processed, f, indent=2, ensure_ascii=False)
+        json.dump(deduped, f, indent=2, ensure_ascii=False)
     
-    print(f"处理完成，共生成 {len(all_processed)} 条记录，已保存至 {output_path}")
+    print(f"处理完成，共生成 {len(deduped)} 条记录（已去重），已保存至 {output_path}")
 
 
 if __name__ == "__main__":
