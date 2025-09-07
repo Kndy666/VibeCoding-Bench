@@ -251,7 +251,7 @@ class DockerCommandExecutor(BaseCommandExecutor):
             
         exec_instance = self.client.api.exec_create(
             self.container.id,
-            cmd=f"/bin/bash -c '{timeout_command}'",
+            cmd=["/bin/bash", "-c", timeout_command],
             workdir=workdir,
             stdout=True,
             stderr=True,

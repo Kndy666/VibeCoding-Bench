@@ -1,6 +1,7 @@
 import docker
 import os
 import logging
+import shlex
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Any
 import docker.models.containers
@@ -456,7 +457,7 @@ PYTHON VERSION INFORMATION
 
 {problem_statement}
 """
-            escaped_problem = problem_statement.replace('"', '\\"').replace("'", "'\\''").replace('\n', '\\n')
+            escaped_problem = shlex.quote(problem_statement)
             
             # 根据不同agent构建运行命令
             if self.agent_config.name == "trae-agent":
@@ -478,14 +479,14 @@ PYTHON VERSION INFORMATION
 
     def _build_trae_agent_command(self, escaped_problem: str, repo_name: str) -> str:
         """构建trae-agent运行命令（直接传入问题描述）"""
-        return f"""source .venv/bin/activate && uv run trae-cli run \\
-            "{escaped_problem}" \\
-            --must-patch \\
-            --patch-path /workdir/swap/{repo_name}/patch.diff \\
-            --working-dir /workdir/swap/{repo_name} \\
-            --model {self.agent_config.model} \\
-            --provider {self.agent_config.provider} \\
-            --config-file /workdir/swap/trae-agent/trae_config.yaml"""
+        return ("source .venv/bin/activate && uv run trae-cli run "
+            f"{escaped_problem} "
+            "--must-patch "
+            f"--patch-path /workdir/swap/{repo_name}/patch.diff "
+            f"--working-dir /workdir/swap/{repo_name} "
+            f"--model {self.agent_config.model} "
+            f"--provider {self.agent_config.provider} "
+            f"--config-file /workdir/swap/trae-agent/trae_config.yaml")
 
     def _build_sweagent_command(self, escaped_problem: str, instance_id: str) -> str:
         """构建SWE-agent运行命令（直接传入问题描述）"""

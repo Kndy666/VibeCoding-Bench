@@ -54,7 +54,7 @@ class AgentEvaluator:
 
         eval_cfg = self._raw_config.get("evaluation", {})
         self.default_timeout = eval_cfg.get("default_timeout", 1800)
-        self.max_instances_per_repo = eval_cfg.get("max_instances_per_repo", 10)
+        self.max_instances_per_repo = eval_cfg.get("max_instances_per_repo", 100)
 
         # 用于追踪当前活跃容器，供信号处理器使用
         self.active_containers: List[Any] = []
@@ -150,12 +150,33 @@ class AgentEvaluator:
         return specs_by_repo
 
     def _save_evaluation_results(self, results: List[Dict[str, Any]]):
-        """保存评估结果"""
+        """保存评估结果（追加模式）"""
         results_file = self.base_path / "logs" / "evaluation_results.json"
         results_file.parent.mkdir(parents=True, exist_ok=True)
         
+        # 先读取已有内容
+        existing_results = []
+        if results_file.exists():
+            with results_file.open("r", encoding="utf-8") as f:
+                try:
+                    existing_results = json.load(f)
+                except Exception:
+                    existing_results = []
+        
+        # 合并并去重（按instance_id去重）
+        all_results = existing_results + results
+        seen = set()
+        deduped_results = []
+        for r in all_results:
+            iid = r.get("instance_id")
+            if iid and iid not in seen:
+                deduped_results.append(r)
+                seen.add(iid)
+            elif not iid:
+                deduped_results.append(r)  # 没有instance_id的也保留
+        
         with results_file.open("w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+            json.dump(deduped_results, f, indent=2, ensure_ascii=False)
 
     def _clean_ansi_codes(self, text: str) -> str:
         """清理ANSI转义码"""

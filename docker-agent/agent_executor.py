@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 import os
+import shlex
 from typing import Optional, List
 import docker.models.containers
 from agent_config import AgentConfig
@@ -69,7 +70,7 @@ class AgentExecutor:
 
     def _build_trae_command(self, prompt: str, repo_name: str, trajectory_file: str) -> str:
         """构建trae-cli命令"""
-        escaped_prompt = prompt.replace('"', '\\"').replace("'", "'\\''").replace('\n', '\\n')
+        escaped_prompt = shlex.quote(prompt)
         activate_cmd = self.config.get("trae", "activate_command")
         if self.use_docker:
             working_dir = Path("/workdir/swap") / repo_name
@@ -79,7 +80,11 @@ class AgentExecutor:
             config_file = str(self.bash_path / "swap" / "trae-agent" / "trae_config.yaml")
         
         # 确保使用bash执行包含source命令的脚本
-        return f"""bash -c "{activate_cmd} && uv run trae-cli run \\"{escaped_prompt}\\" --config-file {config_file} --working-dir {working_dir} --trajectory-file {trajectory_file}\""""
+        return (f"{activate_cmd} && uv run trae-cli run "
+                f"{escaped_prompt} "
+                f"--config-file {config_file} "
+                f"--working-dir {working_dir} "
+                f"--trajectory-file {trajectory_file}")
 
     def _execute_trae_command(self, command: str, 
                              container: Optional[docker.models.containers.Container] = None) -> tuple[int, str]:
