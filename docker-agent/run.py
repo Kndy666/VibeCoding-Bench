@@ -247,11 +247,11 @@ class DockerAgentRunner:
         except Exception as e:
             self.logger.error(f"保存测试日志失败: {e}")
 
-    def _reset_and_apply(self, operator: ContainerOperator, repo_name: str, base_commit: str, patches: List[str]):
+    def _reset_and_apply(self, operator: ContainerOperator, base_commit: str, patches: List[List[Dict[str, Any]]]):
         operator.checkout_commit(base_commit, use_docker=True)
         for p in patches or []:
             if p:
-                operator.apply_patches(p, repo_name)
+                operator.apply_patches(p)
 
     def _run_tests(self, operator: ContainerOperator, repo_name: str, test_filter = Optional[List[Dict[str, CodeChange]]], expected_statuses: List[TestStatus] = [TestStatus.PASSED]):
         if test_filter is None:
@@ -376,7 +376,7 @@ class DockerAgentRunner:
                                 self.logger.error(f"保存仓库 {repo.lower()}#{spec['instance_id'].split('-')[-1]} 镜像失败: {str(save_err)}")
 
                         except Exception as setup_err:
-                            self.logger.error(f"为仓库 {repo.lower()}#{spec['instance_id'].split("-")[-1]} 配置环境时出错: {str(setup_err)}")
+                            self.logger.error(f"为仓库 {repo.lower()}#{spec['instance_id'].split('-')[-1]} 配置环境时出错: {str(setup_err)}")
                             continue
                     else:
                         container = self.docker_manager.setup_container_and_environment(repo, spec["instance_id"].split("-")[-1])
@@ -404,9 +404,20 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Docker Agent Runner")
     parser.add_argument("--test-only", action="store_true", help="仅执行测试，跳过环境配置与镜像保存")
+    parser.add_argument("--evaluate", action="store_true", help="运行评估模式")
+    parser.add_argument("--agents", nargs="+", help="要评估的agent名称列表")
+    parser.add_argument("--max-instances", type=int, default=10, help="每个repo最大实例数")
+    
     args = parser.parse_args()
-    runner = DockerAgentRunner(test_only=args.test_only)
-    runner.run()
+    
+    if args.evaluate:
+        # 导入评估器并运行
+        from evaluate import AgentEvaluator
+        evaluator = AgentEvaluator()
+        evaluator.evaluate(agent_names=args.agents, max_instances=args.max_instances)
+    else:
+        runner = DockerAgentRunner(test_only=args.test_only)
+        runner.run()
 
 if __name__ == "__main__":
     main()

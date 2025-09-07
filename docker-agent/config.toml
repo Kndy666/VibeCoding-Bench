@@ -12,7 +12,7 @@ https_proxy = "http://127.0.0.1:58591"
 timeout = 180
 
 [paths]
-analysis_file = "/home/kndy666/Programming/Agent/data_collect/swebench-live/analysis_results.json"
+analysis_file = "/home/kndy666/Programming/Agent/data_collect/swebench-live/analysis_results_part1.json"
 
 [execution]
 max_specs_per_repo = 100
@@ -75,7 +75,7 @@ Your test command must output detailed pass/fail status for each test item. This
 PASSED tests/test_resources.py::test_fetch_centromeres
 PASSED tests/test_vis.py::test_to_ucsc_colorstring
 
-**IMPORTANT:** Always use '--tb=short' to avoid excessive traceback output. Before running any tests, you MUST attempt to install 'pytest-timeout', and ALWAYS add '--timeout=15' to your pytest command to prevent any single test case from running too long.
+**IMPORTANT:** Always use '--tb=short' to avoid excessive traceback output. Before running any tests, you MUST attempt to install 'pytest-timeout' and 'pytest-xdist', and ALWAYS add '--timeout=5' and '-n auto' to your pytest command to prevent any single test case from running too long and to speed up testing by running tests in parallel.
 
 **IMPORTANT:** You must additionally test {test_files}. If these specific tests fail due to ImportError or ModuleNotFound, you should make every effort to install all optional dependencies. For other test files, you may tolerate ImportError or ModuleNotFound errors.
 
@@ -129,6 +129,14 @@ Please first check what packages are already installed in the system Python envi
 6. Note: 'python3 --version' shows the agent's Python version, not the system Python for project development.
 7. **CRITICAL**: Always verify you're using system Python tools, not agent Python tools before any installation.
 """
+
+[evaluation]
+default_timeout = 1800
+max_instances_per_repo = 100
+results_dir = "logs/evaluation_results"
+
+[agents]
+config_file = "agent_configs.json"
 
 [dockerfile]
 template = """

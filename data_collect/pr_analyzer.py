@@ -390,7 +390,9 @@ def generate_detailed_description_with_llm(
         files_text = "No files were modified in this PR."
     
     prompt = f"""
-You need to create a user-focused description for this software update. Analyze the PR information and code changes to understand what this means for users.
+You are creating a user requirement description that will be used to instruct another LLM to implement the exact same functionality. Your task is to analyze the PR information and code changes, then write a comprehensive user request that describes what the user wants to accomplish.
+
+This description will be given to a coding LLM to generate the implementation, so you must ensure all functionality across all modified files is thoroughly described from the user's perspective.
 
 Original Feature Description: {feature_description}
 
@@ -400,27 +402,32 @@ PR Description: {pr_info.get('body', '')}
 File Changes:
 {files_text}
 
-Your description must:
-- Start with "I want to" and focus on user needs and capabilities
-- Explain what users can now accomplish with this update
-- Highlight the benefits and value this brings to user experience
-- Show how this functionality helps users in their workflow
-- Avoid technical implementation details
-- Use existing PR context when valuable, but enhance it with code insights
-- Provide a cohesive explanation of why this update matters to users
+Your user requirement description must:
+- Start with "I want to" and write as if a user is requesting this functionality from a developer
+- Include ALL information from the original PR Description - do not omit any details, requirements, or context provided there
+- Describe what the user wants to accomplish with complete detail for every file that was modified
+- Include all functional requirements that would be needed to recreate this exact implementation
+- When functions/methods have parameter changes (additions, deletions, modifications), describe what the user needs in terms of input data and configuration options, mentioning specific parameter names naturally within the context of the requirement
+- Focus on the complete user workflow and all capabilities they need
+- Describe the expected behavior and outcomes the user wants to achieve
+- Ensure a coding LLM reading this could implement all the functionality without seeing the original code
+- Write as a natural user request, not technical documentation
+- Avoid phrases like "implement function X" or "modify file Y" - instead describe what the user wants to accomplish
+- Do NOT include any actual code implementations, code snippets, or technical syntax - only describe the desired functionality and behavior from a user perspective
+- Focus on WHAT the user wants to achieve, not HOW it should be implemented technically
 
-Write directly from the user's perspective about what they can accomplish and what value they receive.
+Remember: This description will be the only guide for another LLM to recreate this functionality, so include every important detail about what the user wants to achieve, but express it as natural user requirements. You must incorporate all information from the original PR description. Never include code - only describe the desired outcomes and behaviors.
 """
 
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You help users understand software updates by writing clear, user-focused descriptions. Always start responses with 'I want to' and explain what users can accomplish and the value they receive. Focus on practical benefits rather than technical details."},
+                {"role": "system", "content": "You are a requirements analyst who creates comprehensive user requirement descriptions that will be used to instruct coding LLMs to implement functionality. Your descriptions must be detailed enough for another LLM to recreate the exact same implementation without seeing the original code. Always start with 'I want to' and write from the user's perspective about what they need to accomplish."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0,
-            max_tokens=1000
+            max_tokens=8192
         )
 
         content = response.choices[0].message.content

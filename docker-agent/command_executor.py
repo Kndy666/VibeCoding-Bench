@@ -23,7 +23,8 @@ docker_environment = {
     # "https_proxy": PROXY_URL,
     "COLUMNS": str(terminal_width),
     "LINES": str(terminal_height),
-    "PYTHONUNBUFFERED": "1"
+    "PYTHONUNBUFFERED": "1",
+    "HF_HUB_OFFLINE": "1"
 }
 
 class BaseCommandExecutor(ABC):
