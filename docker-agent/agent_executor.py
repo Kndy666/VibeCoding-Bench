@@ -71,7 +71,6 @@ class AgentExecutor:
     def _build_trae_command(self, prompt: str, repo_name: str, trajectory_file: str) -> str:
         """构建trae-cli命令"""
         escaped_prompt = shlex.quote(prompt)
-        activate_cmd = self.config.get("trae", "activate_command")
         if self.use_docker:
             working_dir = Path("/workdir/swap") / repo_name
             config_file = "/workdir/swap/trae-agent/trae_config.yaml"
@@ -80,7 +79,7 @@ class AgentExecutor:
             config_file = str(self.bash_path / "swap" / "trae-agent" / "trae_config.yaml")
         
         # 确保使用bash执行包含source命令的脚本
-        return (f"{activate_cmd} && uv run trae-cli run "
+        return (f".venv/bin/python3.12 -m trae_agent.cli "
                 f"{escaped_prompt} "
                 f"--config-file {config_file} "
                 f"--working-dir {working_dir} "

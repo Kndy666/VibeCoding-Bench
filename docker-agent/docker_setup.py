@@ -447,16 +447,6 @@ class AgentManager:
         self.logger.info(f"正在运行 {self.agent_config.name} 解决问题 {instance_id}")
         
         try:
-            # 不再创建问题描述文件，直接转义后传入命令、
-            problem_statement = f"""
-PYTHON VERSION INFORMATION
-**IMPORTANT: About Python versions in this container:**
-- Before running python command, always use 'which python3' to check the path of the python interpreter being used.
-- Do NOT use the python interpreter from the agent environment (e.g., /workdir/agent/.venv/bin/python3.x).
-- You MUST use the system python interpreter for the project (e.g., /usr/bin/python3.x).
-
-{problem_statement}
-"""
             escaped_problem = shlex.quote(problem_statement)
             
             # 根据不同agent构建运行命令
@@ -479,7 +469,7 @@ PYTHON VERSION INFORMATION
 
     def _build_trae_agent_command(self, escaped_problem: str, repo_name: str) -> str:
         """构建trae-agent运行命令（直接传入问题描述）"""
-        return ("source .venv/bin/activate && uv run trae-cli run "
+        return (".venv/bin/python3.12 -m trae_agent.cli run "
             f"{escaped_problem} "
             "--must-patch "
             f"--patch-path /workdir/swap/{repo_name}/patch.diff "

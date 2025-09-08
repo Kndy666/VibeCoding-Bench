@@ -19,7 +19,6 @@ max_specs_per_repo = 100
 default_python_version = "3.9"
 
 [trae]
-activate_command = "source .venv/bin/activate"
 trajectory_timestamp_format = "%Y%m%d_%H%M%S"
 
 [files]
@@ -81,17 +80,11 @@ PASSED tests/test_vis.py::test_to_ucsc_colorstring
 
 PYTHON VERSION INFORMATION
 **IMPORTANT: About Python versions in this container:**
-- When you run 'python3 --version', it shows the Python version of the current agent environment
-- This is NOT the system Python that you should use for the project
 - The container has been pre-configured with the optimal Python version for this specific project 
 - **IMPORTANT** The Python version specified in the {version_file} is already installed in the system. You can use 'python3.x' to run the project directly (e.g., python3.11)
-- You should use the system Python installation, which may be different from what 'python3 --version' shows
 - DO NOT attempt to install or change Python versions - the correct version is already installed in the system
 
 PREFERRED INSTALLATION METHOD
-**CRITICAL: Avoid installing to agent's Python environment**
-- When using any installation tools (uv, pip, pip3), make sure you're NOT installing to the agent's Python environment
-- The agent runs in its own Python environment - you need to use the system Python for project development
 - Always check which Python environment you're targeting before installation
 
 **PRIORITY 1: Try using UV or poetry first (recommended)**
@@ -105,7 +98,7 @@ PREFERRED INSTALLATION METHOD
 
 **PRIORITY 2: Fallback to traditional tools if UV fails**
 - If UV doesn't work or encounters issues, fall back to pip3
-- Use system pip3 (not the agent's pip): check with 'which pip3' to verify location
+- Use system pip3: check with 'which pip3' to verify location
 - Install necessary dependencies using system pip3
 - If the project needs to be installed as a package, use 'pip3 install -e .'
 - If you use pip to install dependencies, since pip cannot specify a cutoff date, you may encounter dependency version conflicts. In such cases, you need to manually resolve the conflicts according to the project's timeline. The cut-off time is {created_time}.
@@ -115,19 +108,16 @@ Set up the correct Python environment and ensure all required packages are insta
 Focus on resolving any import errors, missing dependencies, or configuration issues.
 
 IMPORTANT: 
-1. This Docker container may have been used to configure environments for the same project at different commits before.
+1. This Docker container may have been used to configure environments for the same project before.
 2. UV is already installed in the container and configured with Tsinghua mirror for faster downloads.
 3. If you encounter any testing-related errors (such as 'collected 0 items', 'no tests found', 'skip', 'INTERNALERROR', 
 'TypeError: could not get code object', or other pytest framework internal issues), please ignore these errors and focus 
 on environment configuration instead. These errors may indicate that test files don't exist, don't contain valid tests, 
 or are pytest framework internal issues. In such cases, abandon trying to fix specific test files and continue with 
 dependency installation and environment configuration.
-4. Do NOT configure the environment in the virtual environment of the agent.
-Instead, use the system Python environment. Install all dependencies to the system Python, not in any virtual environment.
-5. This Docker container may have been used to configure environments for the same project at different commits before.
+4. Install all dependencies to the system Python, not in any virtual environment.
+5. This Docker container may have been used to configure environments for the same project before.
 Please first check what packages are already installed in the system Python environment to avoid conflicts.
-6. Note: 'python3 --version' shows the agent's Python version, not the system Python for project development.
-7. **CRITICAL**: Always verify you're using system Python tools, not agent Python tools before any installation.
 """
 
 [evaluation]
